@@ -1,14 +1,15 @@
-"use client";
-
 import { Navbar } from "./Navbar";
 import { Footer } from "./Footer";
+import { NeuralBackground } from "./NeuralBackground";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen flex flex-col bg-background">
+    <>
+      {/* Site-wide ambient neuron background — fixed -z-10 so every page feels alive */}
+      <NeuralBackground variant="default" />
       <Navbar />
-      <main className="flex-1">{children}</main>
+      <main className="relative">{children}</main>
       <Footer />
-    </div>
+    </>
   );
 }
