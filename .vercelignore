@@ -1,0 +1,36 @@
+# Python venv — never deploy, Vercel installs from requirements.txt
+api/.venv/
+
+# Build artifacts
+.next/
+out/
+
+# Local env — secrets must never ship
+.env
+.env.local
+.env.*.local
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+*.egg-info/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+
+# Tests / notebooks
+tests/
+notebooks/
+
+# Original Streamlit app (not part of the deployed Next.js project)
+app.py
+src/data/
+src/experiments/
+src/nn/
+src/utils/
+src/visualization/
+requirements.txt
