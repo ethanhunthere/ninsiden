@@ -66,7 +66,7 @@ export function BackpropVisual() {
             <span
               key={i}
               className="w-1.5 h-1.5 rounded-full"
-              style={{ backgroundColor: i === phaseIdx ? "#00d4ff" : "#1e2230" }}
+              style={{ backgroundColor: i === phaseIdx ? "#00e5ff" : "#16213a" }}
             />
           ))}
         </div>

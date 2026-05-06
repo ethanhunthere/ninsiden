@@ -3,10 +3,10 @@
 import { motion } from "framer-motion";
 
 const SECTIONS = [
-  { label: "System Prompt", tokens: 120, color: "#8b5cf6", pct: 12 },
-  { label: "Context Chunks", tokens: 480, color: "#00d4ff", pct: 48 },
-  { label: "User Prompt", tokens: 40, color: "#10b981", pct: 10 },
-  { label: "Available", tokens: 360, color: "#1e2230", pct: 30 },
+  { label: "System Prompt", tokens: 120, color: "#9d7aff", pct: 12 },
+  { label: "Context Chunks", tokens: 480, color: "#00e5ff", pct: 48 },
+  { label: "User Prompt", tokens: 40, color: "#00e5a0", pct: 10 },
+  { label: "Available", tokens: 360, color: "#16213a", pct: 30 },
 ];
 
 const TOTAL = 1000;

@@ -107,7 +107,7 @@ export function SearchRadarVisual() {
       // Centre dot
       ctx!.beginPath();
       ctx!.arc(cx, cy, 3, 0, Math.PI * 2);
-      ctx!.fillStyle = "#00d4ff";
+      ctx!.fillStyle = "#00e5ff";
       ctx!.fill();
 
       t += 1;

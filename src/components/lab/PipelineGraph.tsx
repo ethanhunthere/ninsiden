@@ -12,14 +12,14 @@ interface PipelineGraphProps {
 }
 
 const NODE_COLORS: Record<string, { idle: string; active: string; done: string }> = {
-  prompt:    { idle: "#1e2230", active: "#00d4ff", done: "#0891b2" },
-  tokens:    { idle: "#1e2230", active: "#8b5cf6", done: "#6d28d9" },
-  intent:    { idle: "#1e2230", active: "#8b5cf6", done: "#6d28d9" },
-  retrieval: { idle: "#1e2230", active: "#00d4ff", done: "#0891b2" },
-  context:   { idle: "#1e2230", active: "#8b5cf6", done: "#6d28d9" },
-  model:     { idle: "#1e2230", active: "#8b5cf6", done: "#6d28d9" },
-  stream:    { idle: "#1e2230", active: "#10b981", done: "#059669" },
-  answer:    { idle: "#1e2230", active: "#10b981", done: "#059669" },
+  prompt:    { idle: "#16213a", active: "#00e5ff", done: "#00b3cc" },
+  tokens:    { idle: "#16213a", active: "#9d7aff", done: "#7c5ccc" },
+  intent:    { idle: "#16213a", active: "#9d7aff", done: "#7c5ccc" },
+  retrieval: { idle: "#16213a", active: "#00e5ff", done: "#00b3cc" },
+  context:   { idle: "#16213a", active: "#9d7aff", done: "#7c5ccc" },
+  model:     { idle: "#16213a", active: "#9d7aff", done: "#7c5ccc" },
+  stream:    { idle: "#16213a", active: "#00e5a0", done: "#00b87d" },
+  answer:    { idle: "#16213a", active: "#00e5a0", done: "#00b87d" },
 };
 
 export function PipelineGraph({ activeNode, completedNodes, status }: PipelineGraphProps) {
@@ -39,18 +39,19 @@ export function PipelineGraph({ activeNode, completedNodes, status }: PipelineGr
   return (
     <div className="w-full rounded-xl bg-panel border border-panel-border overflow-hidden">
       <div className="px-4 py-2 border-b border-panel-border flex items-center gap-2">
-        <span className="text-[10px] font-medium text-muted uppercase tracking-wider">
+        <span className="w-1.5 h-1.5 rounded-full bg-accent-cyan shadow-glow-sm-cyan" />
+        <span className="text-[10px] font-semibold text-muted uppercase tracking-[0.12em]">
           Observable Pipeline
         </span>
         {status === "running" && (
           <span className="flex items-center gap-1 text-[10px] text-accent-cyan ml-auto">
-            <span className="w-1.5 h-1.5 rounded-full bg-accent-cyan animate-pulse" />
+            <span className="status-dot status-dot-live" />
             Live
           </span>
         )}
         {status === "completed" && (
           <span className="flex items-center gap-1 text-[10px] text-accent-green ml-auto">
-            <span className="w-1.5 h-1.5 rounded-full bg-accent-green" />
+            <span className="status-dot status-dot-done" />
             Completed
           </span>
         )}
@@ -89,7 +90,7 @@ export function PipelineGraph({ activeNode, completedNodes, status }: PipelineGr
                     y1={node.y}
                     x2={next.x - 20}
                     y2={next.y}
-                    stroke="#00d4ff"
+                    stroke="#00e5ff"
                     strokeWidth={1.5}
                     strokeDasharray="6 4"
                     initial={{ strokeDashoffset: 40 }}
@@ -139,7 +140,7 @@ export function PipelineGraph({ activeNode, completedNodes, status }: PipelineGr
                   cx={node.x}
                   cy={node.y}
                   r={18}
-                  fill="#0d1117"
+                  fill="#080d16"
                   stroke={strokeColor}
                   strokeWidth={isActive ? 2 : 1.5}
                   animate={{ stroke: strokeColor }}

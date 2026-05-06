@@ -52,7 +52,7 @@ export function AttentionMockVisual() {
 
           // Value
           ctx!.font = `8px var(--font-mono, monospace)`;
-          ctx!.fillStyle = animW > 0.5 ? "#e2e8f0" : "#4a5568";
+          ctx!.fillStyle = animW > 0.5 ? "#dce8f5" : "#4a5568";
           ctx!.textAlign = "center";
           ctx!.fillText(animW.toFixed(2), x + cellW / 2, y + cellH / 2 + 3);
         }
@@ -61,7 +61,7 @@ export function AttentionMockVisual() {
       // Column labels (keys)
       for (let col = 0; col < n; col++) {
         ctx!.font = `8.5px var(--font-inter, system-ui)`;
-        ctx!.fillStyle = "#64748b";
+        ctx!.fillStyle = "#4a5a72";
         ctx!.textAlign = "center";
         ctx!.fillText(
           TOKENS_DEMO[col],
@@ -73,7 +73,7 @@ export function AttentionMockVisual() {
       // Row labels (queries)
       for (let row = 0; row < n; row++) {
         ctx!.font = `8.5px var(--font-inter, system-ui)`;
-        ctx!.fillStyle = "#64748b";
+        ctx!.fillStyle = "#4a5a72";
         ctx!.textAlign = "right";
         ctx!.fillText(
           TOKENS_DEMO[row],

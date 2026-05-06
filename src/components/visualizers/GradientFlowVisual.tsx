@@ -65,7 +65,7 @@ export function GradientFlowVisual() {
       // Ball
       ctx!.beginPath();
       ctx!.arc(ballX, ballY, 5, 0, Math.PI * 2);
-      ctx!.fillStyle = "#00d4ff";
+      ctx!.fillStyle = "#00e5ff";
       ctx!.fill();
 
       // Arrow showing gradient direction
@@ -88,7 +88,7 @@ export function GradientFlowVisual() {
       ctx!.fillText("High loss", 4, 18);
       ctx!.fillText("Low loss", 4, H - 6);
       ctx!.textAlign = "right";
-      ctx!.fillStyle = "#00d4ff";
+      ctx!.fillStyle = "#00e5ff";
       ctx!.fillText("← Gradient descent", W - 4, ballY - 10);
 
       t += 1;

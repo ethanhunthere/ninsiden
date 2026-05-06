@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import { ExamplePrompts } from "./ExamplePrompts";
 import { RunControls } from "./RunControls";
 import { cn } from "@/lib/utils";
@@ -33,13 +33,14 @@ export function PromptPanel({
   return (
     <div className="flex flex-col gap-4 h-full">
       {/* Header */}
-      <div>
-        <h2 className="text-sm font-semibold text-foreground/80">Prompt</h2>
-        <p className="text-[11px] text-muted mt-0.5">⌘+Enter to run</p>
+      <div className="flex items-center gap-2">
+        <div className="w-1.5 h-1.5 rounded-full bg-accent-cyan shadow-glow-sm-cyan" />
+        <h2 className="text-xs font-semibold text-foreground-dim uppercase tracking-[0.12em]">Prompt</h2>
+        <span className="ml-auto text-[10px] text-muted">⌘+Enter to run</span>
       </div>
 
       {/* Textarea */}
-      <div className="relative">
+      <div className="relative flex-1 min-h-0">
         <textarea
           ref={textareaRef}
           value={prompt}
@@ -47,19 +48,18 @@ export function PromptPanel({
           onKeyDown={handleKey}
           disabled={status === "running"}
           placeholder="Type a prompt — e.g. Explain how neural networks learn."
-          rows={5}
           className={cn(
-            "w-full resize-none rounded-xl p-3 text-sm leading-relaxed",
-            "bg-panel border border-panel-border text-foreground",
-            "placeholder:text-muted/50 focus:outline-none",
+            "w-full h-full min-h-[120px] resize-none rounded-xl p-3.5 text-sm leading-relaxed",
+            "bg-panel-raised border border-panel-border text-foreground",
+            "placeholder:text-muted/40 focus:outline-none",
             "transition-colors duration-150",
             status === "running"
-              ? "opacity-70 cursor-not-allowed"
-              : "focus:border-accent-cyan/40 focus:shadow-[0_0_0_1px_rgba(0,212,255,0.15)]"
+              ? "opacity-60 cursor-not-allowed"
+              : "focus:border-accent-cyan/35 focus:shadow-[0_0_0_1px_rgba(0,229,255,0.1)]"
           )}
         />
         {prompt.length > 0 && (
-          <span className="absolute bottom-2.5 right-3 text-[10px] text-muted pointer-events-none">
+          <span className="absolute bottom-2.5 right-3 text-[10px] text-muted/50 pointer-events-none">
             {prompt.length}/2000
           </span>
         )}
@@ -73,15 +73,15 @@ export function PromptPanel({
         canRun={prompt.trim().length > 0}
       />
 
-      {/* Status indicator */}
+      {/* Status */}
       <div className="flex items-center gap-2 text-[11px]">
         <span
           className={cn(
-            "w-1.5 h-1.5 rounded-full",
+            "status-dot",
             status === "idle" && "bg-muted",
-            status === "running" && "bg-accent-cyan animate-pulse",
-            status === "completed" && "bg-accent-green",
-            status === "error" && "bg-red-400"
+            status === "running" && "status-dot-live",
+            status === "completed" && "status-dot-done",
+            status === "error" && "status-dot-error"
           )}
         />
         <span className="text-muted capitalize">
@@ -90,12 +90,11 @@ export function PromptPanel({
         </span>
       </div>
 
-      {/* Divider */}
       <div className="border-t border-panel-border" />
 
       {/* Example prompts */}
       <div>
-        <p className="text-[10px] font-medium text-muted uppercase tracking-wider mb-2">
+        <p className="text-[10px] font-medium text-muted uppercase tracking-wider mb-2.5">
           Example prompts
         </p>
         <ExamplePrompts
@@ -105,13 +104,13 @@ export function PromptPanel({
       </div>
 
       {/* Disclaimer */}
-      <div className="mt-auto p-3 rounded-lg bg-white/2 border border-white/6">
-        <p className="text-[10px] text-muted/70 leading-relaxed">
-          NInsideN visualises the <strong className="text-muted">observable application-level pipeline</strong> —
-          prompt processing, retrieval, context assembly, and streaming response.
-          It does not expose private hidden model reasoning or chain-of-thought.
+      <div className="mt-auto p-3 rounded-lg bg-white/2 border border-panel-border">
+        <p className="text-[10px] text-muted/60 leading-relaxed">
+          NInsideN shows the <strong className="text-muted/80">observable application pipeline</strong> —
+          prompt processing, retrieval, context, and streaming. Not private model internals.
         </p>
       </div>
     </div>
   );
 }
+

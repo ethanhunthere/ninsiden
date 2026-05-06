@@ -5,13 +5,13 @@ import { useState, useEffect } from "react";
 
 const DEMO_TEXT = "How does backpropagation work?";
 const TOKENS = [
-  { text: "How", color: "#00d4ff" },
-  { text: "does", color: "#8b5cf6" },
-  { text: "back", color: "#00d4ff" },
-  { text: "prop", color: "#8b5cf6" },
-  { text: "agation", color: "#00d4ff" },
-  { text: "work", color: "#10b981" },
-  { text: "?", color: "#64748b" },
+  { text: "How", color: "#00e5ff" },
+  { text: "does", color: "#9d7aff" },
+  { text: "back", color: "#00e5ff" },
+  { text: "prop", color: "#9d7aff" },
+  { text: "agation", color: "#00e5ff" },
+  { text: "work", color: "#00e5a0" },
+  { text: "?", color: "#4a5a72" },
 ];
 
 export function TokenFlowVisual() {

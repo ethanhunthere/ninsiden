@@ -12,19 +12,19 @@ const ACTIVATION_FUNS = [
     id: "relu",
     label: "ReLU",
     desc: "max(0, x) — outputs zero for negative inputs, linear for positive. Prevents gradient vanishing for positive activations.",
-    color: "#00d4ff",
+    color: "#00e5ff",
   },
   {
     id: "sigmoid",
     label: "Sigmoid",
     desc: "1 / (1 + e^(-x)) — squishes output to (0, 1). Used in binary classification outputs. Prone to vanishing gradients.",
-    color: "#8b5cf6",
+    color: "#9d7aff",
   },
   {
     id: "tanh",
     label: "Tanh",
     desc: "(e^x - e^(-x)) / (e^x + e^(-x)) — zero-centred, range (-1, 1). Generally preferred over sigmoid for hidden layers.",
-    color: "#10b981",
+    color: "#00e5a0",
   },
 ];
 
@@ -62,14 +62,25 @@ export default function NeuralPage() {
   const act = ACTIVATION_FUNS.find((a) => a.id === activation)!;
 
   return (
-    <div className="min-h-screen grid-bg">
-      <div className="max-w-6xl mx-auto px-6 py-16">
-        <div className="mb-12 text-center">
-          <h1 className="text-4xl font-bold mb-4">
-            <span className="text-gradient">Neural Network Lab</span>
+    <div className="min-h-screen relative overflow-hidden">
+      <div className="absolute inset-0 grid-bg opacity-40" aria-hidden />
+      <div
+        className="absolute top-0 left-1/2 -translate-x-1/2 w-[900px] h-[500px] pointer-events-none"
+        style={{ background: "radial-gradient(ellipse at 50% 0%, rgba(157,122,255,0.05) 0%, transparent 60%)" }}
+        aria-hidden
+      />
+
+      <div className="relative max-w-6xl mx-auto px-6 py-16">
+        <div className="mb-14 text-center">
+          <p className="text-xs font-medium tracking-[0.18em] uppercase text-muted mb-5">Interactive</p>
+          <h1
+            className="font-bold text-gradient mb-5 tracking-tight leading-tight"
+            style={{ fontSize: "var(--text-display)" }}
+          >
+            Neural Network Lab
           </h1>
-          <p className="text-foreground/50 text-lg">
-            Interactive visual neural network learning demo — no black boxes.
+          <p className="text-foreground-dim text-lg">
+            Interactive visual neural network learning — no black boxes.
           </p>
         </div>
 

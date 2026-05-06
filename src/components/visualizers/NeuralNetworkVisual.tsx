@@ -86,10 +86,10 @@ export function NeuralNetworkVisual({
         const isHighlight = highlightLayer === li;
         const color =
           li === 0
-            ? "#00d4ff"
+            ? "#00e5ff"
             : li === LAYERS.length - 1
-            ? "#10b981"
-            : "#8b5cf6";
+            ? "#00e5a0"
+            : "#9d7aff";
         const pulse = animating ? 0.8 + 0.2 * Math.sin(t * 0.04 + li) : 1;
 
         for (const { x, y } of layerPositions[li]) {
@@ -107,7 +107,7 @@ export function NeuralNetworkVisual({
           // Node
           ctx!.beginPath();
           ctx!.arc(x, y, nodeRadius, 0, Math.PI * 2);
-          ctx!.fillStyle = "#0d1117";
+          ctx!.fillStyle = "#080d16";
           ctx!.fill();
           ctx!.strokeStyle = isHighlight ? color : color + "50";
           ctx!.lineWidth = isHighlight ? 2 : 1;
