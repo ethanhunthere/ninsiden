@@ -45,6 +45,13 @@ interface Branch {
   spines: Spine[];       // dendritic spines along this branch
   depth: number;         // 0 = trunk
   childIdxs: number[];   // children in the global branches array
+  /** Perpendicular sway oscillation added at draw time */
+  swayPhase: number;     // phase offset for sin()
+  swayAmp: number;       // max pixel displacement at tip
+  swayFreq: number;      // oscillation speed
+  /** Perpendicular unit vector (−sin angle, cos angle) pre-computed */
+  swayNx: number;
+  swayNy: number;
 }
 
 interface Bouton {
@@ -247,7 +254,18 @@ export function HeroNeuronCell({ className }: { className?: string }) {
         const pts = buildPolyline(sx, sy, angle, length, r0, r1, rnd, segCount);
         const spines = spineEnabled ? buildSpines(pts, depth, rnd) : [];
 
-        const branch: Branch = { pts, spines, depth, childIdxs: [] };
+        const branch: Branch = {
+          pts,
+          spines,
+          depth,
+          childIdxs: [],
+          swayPhase: rnd() * Math.PI * 2,
+          swayAmp: (depth + 1) * (2 + rnd() * 3),
+          swayFreq: 0.007 + rnd() * 0.006,
+          // Perpendicular to the overall branch direction (start→end)
+          swayNx: -Math.sin(angle),
+          swayNy: Math.cos(angle),
+        };
         const idx = branches.length;
         branches.push(branch);
         path.push(idx);
@@ -373,7 +391,9 @@ export function HeroNeuronCell({ className }: { className?: string }) {
           segCount
         );
         const idx = branches.length;
-        branches.push({ pts, spines: [], depth: 0, childIdxs: [] });
+        branches.push({ pts, spines: [], depth: 0, childIdxs: [],
+          swayPhase: axRand() * Math.PI * 2, swayAmp: 1.5, swayFreq: 0.005,
+          swayNx: -Math.sin(aAngle), swayNy: Math.cos(aAngle) });
         axonBranches.push(idx);
         const last = pts[pts.length - 1];
         if (!last) break;
@@ -397,7 +417,9 @@ export function HeroNeuronCell({ className }: { className?: string }) {
           5
         );
         const idx = branches.length;
-        branches.push({ pts, spines: [], depth: 0, childIdxs: [] });
+        branches.push({ pts, spines: [], depth: 0, childIdxs: [],
+          swayPhase: axRand() * Math.PI * 2, swayAmp: 3, swayFreq: 0.009,
+          swayNx: -Math.sin(tAngle), swayNy: Math.cos(tAngle) });
         axonBranches.push(idx);
         const last = pts[pts.length - 1];
         if (last) {
@@ -413,11 +435,11 @@ export function HeroNeuronCell({ className }: { className?: string }) {
       // ─── Action-potential pulses ─────────────────────────────
       const pulses: Pulse[] = [];
       const pulseRand = rng(909);
-      for (let i = 0; i < 7; i++) {
+      for (let i = 0; i < 12; i++) {
         pulses.push({
           pathIdx: Math.floor(pulseRand() * rootPaths.length),
           t: pulseRand(),
-          speed: 0.0014 + pulseRand() * 0.002,
+          speed: 0.0012 + pulseRand() * 0.0022,
         });
       }
 
@@ -495,20 +517,39 @@ export function HeroNeuronCell({ className }: { className?: string }) {
     }
 
     // ─── Draw a polyline branch (multi-pass: glow + body + core) ─
-    function drawBranch(b: Branch) {
+    function drawBranch(b: Branch, tick: number, accSwayX = 0, accSwayY = 0) {
       const pts = b.pts;
       if (pts.length < 2) return;
+
+      // Compute this branch's own sway at the TIP
+      const ownSway = Math.sin(tick * b.swayFreq + b.swayPhase) * b.swayAmp;
+      const swayDx = b.swayNx * ownSway;
+      const swayDy = b.swayNy * ownSway;
+
+      // Build a swayed copy: each vertex gets a displacement proportional
+      // to how far along the branch it sits (0 at base → full at tip)
+      const n = pts.length;
+      const swayed: PolyPoint[] = pts.map((p, i) => {
+        const tAlong = i / (n - 1);   // 0 at base, 1 at tip
+        // quadratic growth so most sway is at the distal end
+        const frac = tAlong * tAlong;
+        return {
+          x: p.x + accSwayX + swayDx * frac,
+          y: p.y + accSwayY + swayDy * frac,
+          r: p.r,
+        };
+      });
 
       // Depth-based fade (atmospheric perspective on distal twigs)
       const depthFade = Math.max(0.45, 1 - b.depth * 0.07);
 
-      // Build path once
+      // Build path
       ctx.beginPath();
-      const first = pts[0];
+      const first = swayed[0];
       if (!first) return;
       ctx.moveTo(first.x, first.y);
-      for (let i = 1; i < pts.length; i++) {
-        const p = pts[i];
+      for (let i = 1; i < swayed.length; i++) {
+        const p = swayed[i];
         if (p) ctx.lineTo(p.x, p.y);
       }
 
@@ -522,10 +563,9 @@ export function HeroNeuronCell({ className }: { className?: string }) {
       ctx.stroke();
 
       // 2) Mid stroke — colour body, gradient along start→end
-      const last = pts[pts.length - 1];
+      const last = swayed[swayed.length - 1];
       if (last) {
         const grad = ctx.createLinearGradient(first.x, first.y, last.x, last.y);
-        // Near-soma → magenta-violet, distal → cyan-white
         const tipness = Math.min(1, b.depth / 6);
         grad.addColorStop(
           0,
@@ -550,13 +590,12 @@ export function HeroNeuronCell({ className }: { className?: string }) {
         ctx.strokeStyle = `rgba(200, 170, 255, ${0.5 * depthFade})`;
         ctx.lineWidth = 0.5;
         ctx.beginPath();
-        ctx.moveTo(sp.x, sp.y);
-        ctx.lineTo(sp.ex, sp.ey);
+        ctx.moveTo(sp.x + accSwayX, sp.y + accSwayY);
+        ctx.lineTo(sp.ex + accSwayX, sp.ey + accSwayY);
         ctx.stroke();
-        // little spine head (bouton-like)
         ctx.fillStyle = `rgba(230, 210, 255, ${0.7 * depthFade})`;
         ctx.beginPath();
-        ctx.arc(sp.ex, sp.ey, sp.headR, 0, Math.PI * 2);
+        ctx.arc(sp.ex + accSwayX, sp.ey + accSwayY, sp.headR, 0, Math.PI * 2);
         ctx.fill();
       }
     }
@@ -728,7 +767,11 @@ export function HeroNeuronCell({ className }: { className?: string }) {
       ctx.globalCompositeOperation = "lighter";
 
       // Sort branches deepest-first so trunks sit on top
-      // (depth 0 drawn last → most prominent)
+      // (depth 0 drawn last → most prominent).
+      // We draw root branches (depth 0) which will NOT recursively call
+      // children via drawBranch's tree — they pass accumulated sway down.
+      // For the hero cell, the branch tree is flat (childIdxs), so we
+      // draw all branches sorted by depth and pass zero accumulated sway.
       const order = branches
         .map((_, i) => i)
         .sort((a, b) => {
@@ -738,7 +781,7 @@ export function HeroNeuronCell({ className }: { className?: string }) {
         });
       for (const i of order) {
         const b = branches[i];
-        if (b) drawBranch(b);
+        if (b) drawBranch(b, tick, 0, 0);
       }
 
       // Boutons

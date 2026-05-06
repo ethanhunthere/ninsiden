@@ -14,21 +14,28 @@ const FEATURE_BULLETS = [
 
 export function HeroSection() {
   return (
-    <section className="relative overflow-hidden">
-      {/* Hero stage — lays the cinematic neuron behind the copy */}
+    <section className="relative overflow-hidden min-h-[96vh] flex flex-col justify-center">
+      {/* Hero neuron — takes up the entire left half dramatically */}
       <div className="absolute inset-0 pointer-events-none" aria-hidden>
-        {/* Big organic neuron sits behind the left half */}
-        <div className="absolute inset-y-0 left-0 w-[60%] hidden lg:block">
+        <div className="absolute inset-y-0 left-0 w-[68%] hidden lg:block">
           <HeroNeuronCell />
         </div>
-        {/* Mobile: small ambient version centred top */}
-        <div className="absolute inset-x-0 top-0 h-[300px] lg:hidden opacity-50">
+        {/* Mobile: centred top neuron */}
+        <div className="absolute inset-x-0 top-0 h-[280px] lg:hidden opacity-40">
           <HeroNeuronCell />
         </div>
+        {/* Gradient fade from neuron to right-side content */}
+        <div
+          className="absolute inset-y-0 left-0 w-full hidden lg:block"
+          style={{
+            background:
+              "linear-gradient(105deg, transparent 30%, rgba(4,5,10,0.35) 52%, rgba(4,5,10,0.85) 68%, rgba(4,5,10,0.98) 80%)",
+          }}
+        />
       </div>
 
-      <div className="relative max-w-[1440px] mx-auto px-5 lg:px-10 pt-14 lg:pt-20 pb-16 lg:pb-24">
-        <div className="grid lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] gap-8 xl:gap-14 items-center">
+      <div className="relative max-w-[1440px] mx-auto px-5 lg:px-10 pt-20 lg:pt-24 pb-20 lg:pb-28 w-full">
+        <div className="grid lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] gap-10 xl:gap-16 items-center">
           {/* ── Left: Hero copy ──────────────────────────────── */}
           <div className="flex flex-col gap-6 lg:gap-7 max-w-xl relative z-10">
             <motion.p
@@ -45,7 +52,7 @@ export function HeroSection() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.7, delay: 0.05 }}
               className="font-bold tracking-tight leading-[0.96] text-foreground"
-              style={{ fontSize: "clamp(2.6rem, 5.5vw, 5rem)" }}
+              style={{ fontSize: "clamp(2.8rem, 5.8vw, 5.4rem)" }}
             >
               Neural Inside
               <br />
@@ -58,9 +65,9 @@ export function HeroSection() {
               transition={{ duration: 0.7, delay: 0.15 }}
               className="font-semibold leading-[1.1] tracking-tight"
               style={{
-                fontSize: "clamp(1.5rem, 2.6vw, 2.4rem)",
+                fontSize: "clamp(1.5rem, 2.8vw, 2.5rem)",
                 background:
-                  "linear-gradient(105deg, #cdb4ff 0%, #9d7aff 60%, #00e5ff 110%)",
+                  "linear-gradient(105deg, #cdb4ff 0%, #9d7aff 55%, #00e5ff 115%)",
                 WebkitBackgroundClip: "text",
                 WebkitTextFillColor: "transparent",
                 backgroundClip: "text",
@@ -171,6 +178,18 @@ export function HeroSection() {
           </motion.div>
         </div>
       </div>
+
+      {/* Scroll indicator */}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 1.2, duration: 0.8 }}
+        className="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 pointer-events-none"
+        aria-hidden
+      >
+        <span className="text-[10px] tracking-[0.2em] uppercase text-muted">Scroll</span>
+        <div className="w-px h-10 bg-gradient-to-b from-muted/60 to-transparent" />
+      </motion.div>
     </section>
   );
 }
