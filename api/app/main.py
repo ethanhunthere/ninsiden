@@ -1,8 +1,10 @@
 """
 NInsideN FastAPI application — main entry point.
-Provides /api/health and /api/trace (SSE streaming).
+Provides /api/health, /api/trace (SSE), /api/tokenize, and /api/next-tokens.
 """
-from fastapi import FastAPI, HTTPException
+import math
+
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -56,3 +58,91 @@ async def trace(request: TraceRequest) -> StreamingResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.get("/api/tokenize")
+async def tokenize_text(
+    text: str = Query(default="Hello world", max_length=500, description="Text to tokenise"),
+) -> dict:
+    """
+    Tokenise text using GPT-4 cl100k_base BPE (via tiktoken) or word-level fallback.
+    Returns token list with type classification and the encoding method used.
+    """
+    from app.tokenizer import tokenize, METHOD  # type: ignore[attr-defined]
+
+    tokens = tokenize(text)
+    return {
+        "tokens": tokens,
+        "total":  len(tokens),
+        "method": METHOD,
+    }
+
+
+# ── Demo next-token prediction fallbacks (used when OpenAI is unconfigured) ──
+_NEXT_TOKEN_DEMOS: dict[str, list[dict]] = {
+    "default": [
+        {"token": "learns",    "prob": 0.28},
+        {"token": "processes", "prob": 0.21},
+        {"token": "predicts",  "prob": 0.16},
+        {"token": "generates", "prob": 0.11},
+        {"token": "computes",  "prob": 0.08},
+    ],
+    "the": [
+        {"token": "model",       "prob": 0.31},
+        {"token": "neural",      "prob": 0.22},
+        {"token": "network",     "prob": 0.17},
+        {"token": "transformer", "prob": 0.12},
+        {"token": "system",      "prob": 0.08},
+    ],
+    "network": [
+        {"token": "predicts",  "prob": 0.30},
+        {"token": "learns",    "prob": 0.24},
+        {"token": "processes", "prob": 0.18},
+        {"token": "outputs",   "prob": 0.12},
+        {"token": "generates", "prob": 0.09},
+    ],
+}
+
+
+@app.get("/api/next-tokens")
+async def next_tokens(
+    prefix: str = Query(
+        default="The neural network",
+        max_length=200,
+        description="Text prefix to predict the next token for",
+    ),
+) -> dict:
+    """
+    Return the top-5 next-token predictions for a text prefix.
+    Uses real OpenAI completions API with logprobs when configured;
+    falls back to a curated demo table otherwise.
+    """
+    if not settings.openai_configured:
+        last_word = prefix.strip().split()[-1].lower() if prefix.strip() else ""
+        demo = _NEXT_TOKEN_DEMOS.get(last_word, _NEXT_TOKEN_DEMOS["default"])
+        return {"tokens": demo, "prefix": prefix, "method": "demo"}
+
+    try:
+        from openai import AsyncOpenAI
+        from app.config import settings as cfg
+
+        client = AsyncOpenAI(api_key=cfg.openai_api_key)
+        response = await client.completions.create(
+            model="gpt-3.5-turbo-instruct",
+            prompt=prefix,
+            max_tokens=1,
+            logprobs=5,
+            temperature=0,
+        )
+        top_logprobs: dict = response.choices[0].logprobs.top_logprobs[0]  # type: ignore[index]
+        tokens = [
+            {"token": k.strip(), "prob": round(math.exp(v), 4)}
+            for k, v in top_logprobs.items()
+        ]
+        tokens.sort(key=lambda x: -x["prob"])
+        return {"tokens": tokens[:5], "prefix": prefix, "method": "gpt-3.5-turbo-instruct"}
+
+    except Exception:
+        last_word = prefix.strip().split()[-1].lower() if prefix.strip() else ""
+        demo = _NEXT_TOKEN_DEMOS.get(last_word, _NEXT_TOKEN_DEMOS["default"])
+        return {"tokens": demo, "prefix": prefix, "method": "demo"}
