@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import ReactMarkdown from "react-markdown";
 import { cn } from "@/lib/utils";
 
 interface AnswerStreamProps {
@@ -60,17 +61,15 @@ export function AnswerStream({ tokens, answer, status, error, modelInfo }: Answe
         )}
 
         {(status === "running" || status === "completed") && answer && (
-          <div className="prose prose-sm prose-invert max-w-none">
-            <p className="text-sm text-foreground/80 leading-relaxed whitespace-pre-wrap font-mono">
-              {answer}
-              {status === "running" && (
-                <motion.span
-                  className="inline-block w-1.5 h-4 bg-accent-cyan ml-0.5 align-middle rounded-sm"
-                  animate={{ opacity: [1, 0, 1] }}
-                  transition={{ duration: 0.8, repeat: Infinity }}
-                />
-              )}
-            </p>
+          <div className="prose prose-sm prose-invert max-w-none text-sm text-foreground/80 leading-relaxed">
+            <ReactMarkdown>{answer}</ReactMarkdown>
+            {status === "running" && (
+              <motion.span
+                className="inline-block w-1.5 h-4 bg-accent-cyan ml-0.5 align-middle rounded-sm"
+                animate={{ opacity: [1, 0, 1] }}
+                transition={{ duration: 0.8, repeat: Infinity }}
+              />
+            )}
           </div>
         )}
 
