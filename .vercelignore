@@ -33,4 +33,5 @@ src/experiments/
 src/nn/
 src/utils/
 src/visualization/
-requirements.txt
+# Only ignore the root Streamlit requirements.txt, NOT api/requirements.txt
+/requirements.txt
