@@ -1,4 +1,5 @@
-# Python venv — never deploy, Vercel installs from requirements.txt
+# Python venvs — never deploy, Vercel installs from requirements.txt
+.venv/
 api/.venv/
 
 # Build artifacts
