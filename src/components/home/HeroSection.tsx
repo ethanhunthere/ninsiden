@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { ArrowRight, Play, Eye, Layers, ShieldCheck } from "lucide-react";
-import { HeroNeuronCell } from "./HeroNeuronCell";
 import { LiveTracePreview } from "./LiveTracePreview";
 
 const FEATURE_BULLETS = [
@@ -15,24 +14,6 @@ const FEATURE_BULLETS = [
 export function HeroSection() {
   return (
     <section className="relative overflow-hidden min-h-[96vh] flex flex-col justify-center">
-      {/* Hero neuron — takes up the entire left half dramatically */}
-      <div className="absolute inset-0 pointer-events-none" aria-hidden>
-        <div className="absolute inset-y-0 left-0 w-[68%] hidden lg:block">
-          <HeroNeuronCell />
-        </div>
-        {/* Mobile: centred top neuron */}
-        <div className="absolute inset-x-0 top-0 h-[280px] lg:hidden opacity-40">
-          <HeroNeuronCell />
-        </div>
-        {/* Gradient fade from neuron to right-side content */}
-        <div
-          className="absolute inset-y-0 left-0 w-full hidden lg:block"
-          style={{
-            background:
-              "linear-gradient(105deg, transparent 30%, rgba(4,5,10,0.35) 52%, rgba(4,5,10,0.85) 68%, rgba(4,5,10,0.98) 80%)",
-          }}
-        />
-      </div>
 
       <div className="relative max-w-[1440px] mx-auto px-5 lg:px-10 pt-20 lg:pt-24 pb-20 lg:pb-28 w-full">
         <div className="grid lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] gap-10 xl:gap-16 items-center">
