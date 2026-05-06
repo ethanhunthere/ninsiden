@@ -3,390 +3,335 @@
 import { useEffect, useRef } from "react";
 
 /**
- * Site-wide ambient neural background — full biologically realistic field.
+ * Ambient neural background — lightweight, biologically inspired.
  *
- * 20-28 drifting neurons, each with:
- *   • Recursive dendritic tree (3-4 levels, bifurcating)
- *   • Dendritic spines on second-order+ branches
- *   • Branch sway — perpendicular oscillation, cumulative parent→child
- *   • Soma breathing — radius pulses ±5%
- *   • Action potential pulses traveling dendrites
- *   • Synaptic connections + traveling pulse between nearby neurons
- *   • Slow drift; wraps at canvas edges
+ * Design priorities (in order):
+ *   1. Never block scrolling — frame budget ≤ 6ms
+ *   2. Visually clear — neurons are visible at a glance
+ *   3. Biological feel — sway, pulses, drift
  *
- * All branch positions are soma-relative (origin = soma centre).
- * At draw time we translate(n.x, n.y) for zero per-frame allocation.
- *
- * DPR capped 1.75 | ResizeObserver | visibilitychange pause | reduced-motion.
+ * Architecture:
+ *   • 10 neurons (default) / 15 (hero) — enough to fill, not saturate
+ *   • Each neuron: soma + 5-6 dendrites, max 2 recursive levels
+ *   • Draw passes: single stroke per branch (no per-frame gradient creation)
+ *   • Soma: ONE radial gradient created ONCE at build time, cached as
+ *     an offscreen mini-canvas — just composited each frame (zero JS alloc)
+ *   • Sway: analytic sin(), no geometry rebuild
+ *   • 30 fps cap via frame-skip to halve GPU load on slow machines
  */
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-/** Single spine: a short perpendicular stub with a tiny head. */
-interface Spine {
-  t: number;   // position along branch segment [0..1]
-  side: number; // +1 or -1
-  len: number;  // length in px
-}
-
-/** A branch segment in soma-relative coordinates. */
-interface ABranch {
-  restBx: number;  // rest base x (soma-relative)
-  restBy: number;
-  restTx: number;  // rest tip x (soma-relative)
-  restTy: number;
-  /** perpendicular unit vector for sway */
-  nx: number;
-  ny: number;
+interface FlatBranch {
+  bx: number; by: number;
+  tx: number; ty: number;
+  nx: number; ny: number;
   swayAmp: number;
   swayFreq: number;
   swayPhase: number;
   lineWidth: number;
-  depth: number;
-  spines: Spine[];
-  /** Pulse traveling this branch: [0..1] or -1 (inactive) */
+  glowColor: string;
+  bodyColor: string;
+  spines: [number, number, number][];
   pulse: number;
   pulseSpeed: number;
-  children: ABranch[];
+  depth: number;
+  children: FlatBranch[];
 }
 
 interface AmbNeuron {
-  x: number;       // soma world position (drifts)
-  y: number;
-  vx: number;      // drift velocity
-  vy: number;
-  r: number;       // soma rest radius
-  color: string;   // "#rrggbb"
-  branches: ABranch[];
+  x: number; y: number;
+  vx: number; vy: number;
+  r: number;
+  color: string;
+  cr: number; cg: number; cb: number;
+  branches: FlatBranch[];
   somaPhase: number;
-  axonEnd: { x: number; y: number } | null;  // soma-relative axon tip
-}
-
-/** Pair of neurons close enough to form a visible synaptic connection. */
-interface SynPair {
-  a: number;   // index into neurons[]
-  b: number;
-  pulse: number;  // [0..1]
-  speed: number;
+  somaCanvas: HTMLCanvasElement;
+  somaHalf: number;
+  axon: { tx: number; ty: number; nx: number; ny: number } | null;
 }
 
 // ─── Deterministic RNG ────────────────────────────────────────────────────────
 
 function rng(seed: number) {
   let s = seed >>> 0;
-  return () => {
+  return (): number => {
     s = (s * 1664525 + 1013904223) >>> 0;
     return s / 0xffffffff;
   };
 }
 
+// ─── Hex → RGB ────────────────────────────────────────────────────────────────
+
+function hexToRgb(hex: string): [number, number, number] {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
 // ─── Palette ─────────────────────────────────────────────────────────────────
 
 const COLORS = [
-  "#9d7aff", // violet  (45%)
-  "#9d7aff",
-  "#00e5ff", // cyan    (35%)
-  "#00e5ff",
-  "#00e5ff",
-  "#b48aff", // soft violet
-  "#7ab8ff", // ice blue
-  "#ff72c0", // pink magenta (10%)
-  "#00e5a0", // green   (10%)
+  "#9d7aff", "#9d7aff", "#9d7aff",
+  "#00e5ff", "#00e5ff",
+  "#b490ff",
+  "#7ab8ff",
+  "#00e5a0",
 ];
 
-// ─── Build helpers ────────────────────────────────────────────────────────────
-
-function buildSpines(
-  bx: number, by: number, tx: number, ty: number,
-  depth: number, rand: () => number
-): Spine[] {
-  if (depth < 2) return [];
-  const spines: Spine[] = [];
-  const count = Math.floor(3 + rand() * 6);
-  for (let i = 0; i < count; i++) {
-    spines.push({
-      t: 0.05 + rand() * 0.9,
-      side: rand() > 0.5 ? 1 : -1,
-      len: 2.5 + rand() * 4,
-    });
-  }
-  return spines;
-}
+// ─── Build branch (recursive) ─────────────────────────────────────────────────
 
 function buildBranch(
   bx: number, by: number,
   angle: number, length: number,
   depth: number, maxDepth: number,
+  cr: number, cg: number, cb: number,
   rand: () => number
-): ABranch {
+): FlatBranch {
   const tx = bx + Math.cos(angle) * length;
   const ty = by + Math.sin(angle) * length;
   const nx = -Math.sin(angle);
   const ny = Math.cos(angle);
+  const swayAmp = (depth + 1) * (2.5 + rand() * 2.0);
+  const alpha = Math.max(0.22, 0.78 - depth * 0.15);
+  const glowAlpha = Math.max(0.04, 0.12 - depth * 0.02);
+  const lw = Math.max(0.35, 1.8 - depth * 0.35);
 
-  // Sway amplitude grows with depth (distal branches sway more)
-  const swayAmp = (depth + 1) * (1.5 + rand() * 1.5);
+  const spines: [number, number, number][] = [];
+  if (depth >= 2) {
+    const count = Math.floor(2 + rand() * 4);
+    for (let i = 0; i < count; i++) {
+      spines.push([0.05 + rand() * 0.88, rand() > 0.5 ? 1 : -1, 2 + rand() * 3.5]);
+    }
+  }
 
-  const branch: ABranch = {
-    restBx: bx, restBy: by,
-    restTx: tx, restTy: ty,
-    nx, ny,
+  const branch: FlatBranch = {
+    bx, by, tx, ty, nx, ny,
     swayAmp,
-    swayFreq: 0.008 + rand() * 0.009,
+    swayFreq: 0.007 + rand() * 0.008,
     swayPhase: rand() * Math.PI * 2,
-    lineWidth: Math.max(0.3, 2.0 - depth * 0.38),
+    lineWidth: lw,
+    glowColor: `rgba(${cr},${cg},${cb},${glowAlpha.toFixed(2)})`,
+    bodyColor: `rgba(${cr},${cg},${cb},${alpha.toFixed(2)})`,
+    spines,
+    pulse: rand() < 0.25 ? rand() : -1,
+    pulseSpeed: 0.003 + rand() * 0.004,
     depth,
-    spines: buildSpines(bx, by, tx, ty, depth, rand),
-    pulse: rand() < 0.3 ? rand() : -1,
-    pulseSpeed: 0.002 + rand() * 0.003,
     children: [],
   };
 
-  if (depth < maxDepth && length > 10) {
-    const canTerminate = depth >= 2 && rand() < 0.15;
-    if (!canTerminate) {
-      const childCount = rand() < 0.22 ? 1 : 2;
-      const spread = 0.35 + rand() * 0.45;
-      const childLen = length * (0.62 + rand() * 0.18);
-
-      for (let i = 0; i < childCount; i++) {
-        const tDist = childCount === 1 ? 0 : (i / (childCount - 1)) * 2 - 1;
-        const childAngle = angle + tDist * spread + (rand() - 0.5) * 0.3;
-        branch.children.push(
-          buildBranch(tx, ty, childAngle, childLen, depth + 1, maxDepth, rand)
-        );
-      }
+  if (depth < maxDepth && length > 12) {
+    const childCount = rand() < 0.25 ? 1 : 2;
+    const spread = 0.4 + rand() * 0.4;
+    const childLen = length * (0.58 + rand() * 0.18);
+    for (let i = 0; i < childCount; i++) {
+      const tDist = childCount === 1 ? 0 : i === 0 ? -1 : 1;
+      const childAngle = angle + tDist * spread + (rand() - 0.5) * 0.25;
+      branch.children.push(
+        buildBranch(tx, ty, childAngle, childLen, depth + 1, maxDepth,
+          cr, cg, cb, rng(Math.floor(rand() * 99999)))
+      );
     }
   }
 
   return branch;
 }
 
-function buildAmbNeuron(
-  wx: number, wy: number,
-  ww: number, wh: number,
-  seed: number
-): AmbNeuron {
+// ─── Pre-render soma to offscreen canvas ─────────────────────────────────────
+
+function buildSomaCanvas(r: number, cr: number, cg: number, cb: number): HTMLCanvasElement {
+  const half = Math.ceil(r * 5.5);
+  const size = half * 2;
+  const oc = document.createElement("canvas");
+  oc.width = size;
+  oc.height = size;
+  const c = oc.getContext("2d")!;
+  const cx = half, cy = half;
+
+  const halo = c.createRadialGradient(cx, cy, 0, cx, cy, r * 5);
+  halo.addColorStop(0, `rgba(${cr},${cg},${cb},0.28)`);
+  halo.addColorStop(0.45, `rgba(${cr},${cg},${cb},0.08)`);
+  halo.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
+  c.fillStyle = halo;
+  c.beginPath();
+  c.arc(cx, cy, r * 5, 0, Math.PI * 2);
+  c.fill();
+
+  const body = c.createRadialGradient(cx - r * 0.25, cy - r * 0.3, 0, cx, cy, r * 1.1);
+  body.addColorStop(0, `rgba(${cr},${cg},${cb},1)`);
+  body.addColorStop(0.45, `rgba(${cr},${cg},${cb},0.7)`);
+  body.addColorStop(0.85, `rgba(${cr},${cg},${cb},0.2)`);
+  body.addColorStop(1, `rgba(${cr},${cg},${cb},0.05)`);
+  c.fillStyle = body;
+  c.beginPath();
+  c.arc(cx, cy, r, 0, Math.PI * 2);
+  c.fill();
+
+  c.fillStyle = "rgba(6,4,18,0.92)";
+  c.beginPath();
+  c.arc(cx + r * 0.06, cy + r * 0.08, r * 0.44, 0, Math.PI * 2);
+  c.fill();
+
+  c.fillStyle = `rgba(${cr},${cg},${cb},0.95)`;
+  c.beginPath();
+  c.arc(cx - r * 0.15, cy - r * 0.05, r * 0.19, 0, Math.PI * 2);
+  c.fill();
+
+  const hl = c.createRadialGradient(cx - r * 0.38, cy - r * 0.44, 0, cx - r * 0.38, cy - r * 0.44, r * 0.42);
+  hl.addColorStop(0, "rgba(255,255,255,0.38)");
+  hl.addColorStop(1, "rgba(255,255,255,0)");
+  c.fillStyle = hl;
+  c.beginPath();
+  c.arc(cx - r * 0.38, cy - r * 0.44, r * 0.42, 0, Math.PI * 2);
+  c.fill();
+
+  return oc;
+}
+
+// ─── Build full neuron ────────────────────────────────────────────────────────
+
+function buildNeuron(seed: number, w: number, h: number): AmbNeuron {
   const rand = rng(seed);
 
-  const r = 4 + rand() * 6;   // soma radius
   const color = COLORS[Math.floor(rand() * COLORS.length)] ?? "#9d7aff";
+  const [cr, cg, cb] = hexToRgb(color);
+  const r = 5 + rand() * 6;
 
-  // Speed: very slow drift
-  const speed = 0.04 + rand() * 0.06;
-  const driftAngle = rand() * Math.PI * 2;
-  const vx = Math.cos(driftAngle) * speed;
-  const vy = Math.sin(driftAngle) * speed;
+  const dendCount = 5 + Math.floor(rand() * 3);
+  const baseAngle = rand() * Math.PI * 2;
+  const maxDepth = 1 + Math.floor(rand() * 2);
 
-  // First-order dendrites (5-8, radiating outward from soma)
-  const dendCount = 5 + Math.floor(rand() * 4);
-  const branches: ABranch[] = [];
-  const baseAngleOffset = rand() * Math.PI * 2;
-
+  const branches: FlatBranch[] = [];
   for (let i = 0; i < dendCount; i++) {
-    const angle = baseAngleOffset + (i / dendCount) * Math.PI * 2 + (rand() - 0.5) * 0.5;
-    const length = 35 + rand() * 55;
-    const maxDepth = 2 + Math.floor(rand() * 2);
-    branches.push(buildBranch(
-      Math.cos(angle) * r * 0.9,
-      Math.sin(angle) * r * 0.9,
-      angle, length, 0, maxDepth, rng(seed * 13 + i * 97)
-    ));
+    const angle = baseAngle + (i / dendCount) * Math.PI * 2 + (rand() - 0.5) * 0.45;
+    const length = 32 + rand() * 52;
+    branches.push(
+      buildBranch(
+        Math.cos(angle) * r * 0.85,
+        Math.sin(angle) * r * 0.85,
+        angle, length, 0, maxDepth, cr, cg, cb,
+        rng(seed * 31 + i * 113)
+      )
+    );
   }
 
-  // Axon: a single long thin process
-  const axonAngle = baseAngleOffset + Math.PI * (0.5 + rand() * 0.4);
-  const axonLen = 60 + rand() * 80;
-  const axonEnd = {
-    x: Math.cos(axonAngle) * (r + axonLen),
-    y: Math.sin(axonAngle) * (r + axonLen),
+  const axAngle = baseAngle + Math.PI * (0.45 + rand() * 0.55);
+  const axLen = 55 + rand() * 70;
+  const axon = {
+    tx: Math.cos(axAngle) * (r + axLen),
+    ty: Math.sin(axAngle) * (r + axLen),
+    nx: -Math.sin(axAngle),
+    ny: Math.cos(axAngle),
   };
 
+  const speed = 0.05 + rand() * 0.07;
+  const driftAngle = rand() * Math.PI * 2;
+
+  const somaCanvas = buildSomaCanvas(r, cr, cg, cb);
+  const somaHalf = Math.ceil(r * 5.5);
+
   return {
-    x: wx,
-    y: wy,
-    vx,
-    vy,
+    x: rand() * w,
+    y: rand() * h,
+    vx: Math.cos(driftAngle) * speed,
+    vy: Math.sin(driftAngle) * speed,
     r,
     color,
+    cr, cg, cb,
     branches,
     somaPhase: rand() * Math.PI * 2,
-    axonEnd,
+    somaCanvas,
+    somaHalf,
+    axon,
   };
 }
 
-// ─── Draw helpers ─────────────────────────────────────────────────────────────
+// ─── Draw a branch and its subtree ───────────────────────────────────────────
 
-/**
- * Draw one branch (and its whole subtree), accumulating parent sway.
- * `accDx/Dy` = total world displacement from all parent branches.
- */
 function drawBranch(
-  b: ABranch,
+  b: FlatBranch,
   accDx: number, accDy: number,
   tick: number,
   ctx: CanvasRenderingContext2D,
-  color: string,
-  baseAlpha: number
+  cr: number, cg: number, cb: number
 ): void {
-  // Base world position = rest base + accumulated parent sway
-  const bx = b.restBx + accDx;
-  const by = b.restBy + accDy;
-
-  // Own sway at the TIP
   const ownSway = Math.sin(tick * b.swayFreq + b.swayPhase) * b.swayAmp;
-  const swayDx = b.nx * ownSway;
-  const swayDy = b.ny * ownSway;
+  const sx = b.nx * ownSway;
+  const sy = b.ny * ownSway;
 
-  // Tip world position
-  const tx = b.restTx + accDx + swayDx;
-  const ty = b.restTy + accDy + swayDy;
+  const bx = b.bx + accDx;
+  const by = b.by + accDy;
+  const tx = b.tx + accDx + sx;
+  const ty = b.ty + accDy + sy;
 
-  // Depth fade (distal branches dimmer)
-  const depthAlpha = Math.max(0.25, 1 - b.depth * 0.18) * baseAlpha;
-
-  // Outer glow stroke
+  ctx.strokeStyle = b.glowColor;
+  ctx.lineWidth = b.lineWidth * 4.5;
   ctx.beginPath();
   ctx.moveTo(bx, by);
   ctx.lineTo(tx, ty);
-  ctx.strokeStyle = color + Math.round(depthAlpha * 40).toString(16).padStart(2, "0");
-  ctx.lineWidth = b.lineWidth * 4;
-  ctx.lineCap = "round";
   ctx.stroke();
 
-  // Main body stroke
-  ctx.beginPath();
-  ctx.moveTo(bx, by);
-  ctx.lineTo(tx, ty);
-  ctx.strokeStyle = color + Math.round(depthAlpha * 170).toString(16).padStart(2, "0");
+  ctx.strokeStyle = b.bodyColor;
   ctx.lineWidth = b.lineWidth;
+  ctx.beginPath();
+  ctx.moveTo(bx, by);
+  ctx.lineTo(tx, ty);
   ctx.stroke();
 
-  // Dendritic spines
   if (b.spines.length > 0) {
-    const dx = tx - bx;
-    const dy = ty - by;
+    const dx = tx - bx, dy = ty - by;
     const len = Math.hypot(dx, dy) || 1;
-    const ux = dx / len;
-    const uy = dy / len;
-    const pnx = -uy; // perpendicular
-    const pny = ux;
-
-    for (const sp of b.spines) {
-      const sx = bx + dx * sp.t;
-      const sy = by + dy * sp.t;
-      const sex = sx + pnx * sp.side * sp.len;
-      const sey = sy + pny * sp.side * sp.len;
-      // Spine shaft
+    const ux = dx / len, uy = dy / len;
+    const pnx = -uy, pny = ux;
+    ctx.strokeStyle = `rgba(${cr},${cg},${cb},0.5)`;
+    ctx.lineWidth = 0.5;
+    for (const [t, side, slen] of b.spines) {
+      const spx = bx + dx * t;
+      const spy = by + dy * t;
+      const epx = spx + pnx * side * slen;
+      const epy = spy + pny * side * slen;
       ctx.beginPath();
-      ctx.moveTo(sx, sy);
-      ctx.lineTo(sex, sey);
-      ctx.strokeStyle = color + Math.round(depthAlpha * 130).toString(16).padStart(2, "0");
-      ctx.lineWidth = 0.45;
+      ctx.moveTo(spx, spy);
+      ctx.lineTo(epx, epy);
       ctx.stroke();
-      // Spine head (tiny bulb)
+      ctx.fillStyle = `rgba(${cr},${cg},${cb},0.7)`;
       ctx.beginPath();
-      ctx.arc(sex, sey, 0.7 + sp.len * 0.08, 0, Math.PI * 2);
-      ctx.fillStyle = color + Math.round(depthAlpha * 200).toString(16).padStart(2, "0");
+      ctx.arc(epx, epy, 0.7, 0, Math.PI * 2);
       ctx.fill();
     }
   }
 
-  // Pulse bead traveling this branch
   if (b.pulse >= 0) {
     const px = bx + (tx - bx) * b.pulse;
     const py = by + (ty - by) * b.pulse;
-    const grad = ctx.createRadialGradient(px, py, 0, px, py, 5);
-    grad.addColorStop(0, color + "ff");
-    grad.addColorStop(0.4, color + "88");
-    grad.addColorStop(1, color + "00");
-    ctx.fillStyle = grad;
+    ctx.fillStyle = `rgba(${cr},${cg},${cb},0.9)`;
+    ctx.beginPath();
+    ctx.arc(px, py, 2.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = `rgba(${cr},${cg},${cb},0.25)`;
     ctx.beginPath();
     ctx.arc(px, py, 5, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // Recurse into children — they start at our actual swayed tip
-  const newAccDx = accDx + swayDx;
-  const newAccDy = accDy + swayDy;
+  const newAccDx = accDx + sx;
+  const newAccDy = accDy + sy;
   for (const child of b.children) {
-    drawBranch(child, newAccDx, newAccDy, tick, ctx, color, baseAlpha);
+    drawBranch(child, newAccDx, newAccDy, tick, ctx, cr, cg, cb);
   }
 }
 
-function drawSoma(
-  n: AmbNeuron,
-  tick: number,
-  ctx: CanvasRenderingContext2D,
-  baseAlpha: number
-): void {
-  const breathe = 1 + 0.055 * Math.sin(tick * 0.018 + n.somaPhase);
-  const r = n.r * breathe;
-  const col = n.color;
+// ─── Advance pulses ───────────────────────────────────────────────────────────
 
-  // Outer bloom halo
-  const halo = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 5);
-  halo.addColorStop(0, col + Math.round(baseAlpha * 80).toString(16).padStart(2, "0"));
-  halo.addColorStop(0.5, col + Math.round(baseAlpha * 30).toString(16).padStart(2, "0"));
-  halo.addColorStop(1, col + "00");
-  ctx.fillStyle = halo;
-  ctx.beginPath();
-  ctx.arc(0, 0, r * 5, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Main soma fill
-  const soma = ctx.createRadialGradient(-r * 0.25, -r * 0.3, 0, 0, 0, r * 1.1);
-  soma.addColorStop(0, col + "ee");
-  soma.addColorStop(0.4, col + "99");
-  soma.addColorStop(0.8, col + "44");
-  soma.addColorStop(1, col + "11");
-  ctx.fillStyle = soma;
-  ctx.beginPath();
-  ctx.arc(0, 0, r, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Rim
-  ctx.strokeStyle = col + Math.round(baseAlpha * 200).toString(16).padStart(2, "0");
-  ctx.lineWidth = 0.6;
-  ctx.stroke();
-
-  // Nucleus
-  const nr = r * 0.42;
-  const nucGrad = ctx.createRadialGradient(-nr * 0.2, -nr * 0.2, 0, 0, 0, nr);
-  nucGrad.addColorStop(0, "rgba(15, 8, 40, 0.95)");
-  nucGrad.addColorStop(1, "rgba(4, 2, 18, 0.98)");
-  ctx.fillStyle = nucGrad;
-  ctx.beginPath();
-  ctx.arc(0, nr * 0.1, nr, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Nucleolus
-  ctx.fillStyle = col + "cc";
-  ctx.beginPath();
-  ctx.arc(-nr * 0.2, -nr * 0.05, nr * 0.22, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Specular highlight
-  const hl = ctx.createRadialGradient(-r * 0.35, -r * 0.42, 0, -r * 0.35, -r * 0.42, r * 0.48);
-  hl.addColorStop(0, "rgba(255,255,255,0.45)");
-  hl.addColorStop(1, "rgba(255,255,255,0)");
-  ctx.fillStyle = hl;
-  ctx.beginPath();
-  ctx.arc(-r * 0.35, -r * 0.42, r * 0.48, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-// ─── Pulse advancement ────────────────────────────────────────────────────────
-
-function advancePulses(branches: ABranch[]): void {
+function tickBranches(branches: FlatBranch[]): void {
   for (const b of branches) {
     if (b.pulse >= 0) {
       b.pulse += b.pulseSpeed;
-      if (b.pulse > 1) b.pulse = Math.random() < 0.35 ? 0 : -1;
-    } else if (Math.random() < 0.0008) {
+      if (b.pulse > 1) b.pulse = Math.random() < 0.3 ? 0 : -1;
+    } else if (Math.random() < 0.0015) {
       b.pulse = 0;
     }
-    advancePulses(b.children);
+    if (b.children.length > 0) tickBranches(b.children);
   }
 }
 
@@ -403,7 +348,6 @@ export function NeuralBackground({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef(0);
   const neuronsRef = useRef<AmbNeuron[]>([]);
-  const synPairsRef = useRef<SynPair[]>([]);
   const sizeRef = useRef({ w: 0, h: 0 });
 
   useEffect(() => {
@@ -421,35 +365,7 @@ export function NeuralBackground({
       window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
     const HERO = variant === "hero";
-    // More neurons for hero, slightly fewer for ambient pages
-    const TARGET_COUNT = HERO ? 28 : 20;
-    const BASE_ALPHA = HERO ? 0.9 : 0.55;
-    const CONNECTION_RANGE = 220;
-
-    function rebuild(w: number, h: number) {
-      const neurons: AmbNeuron[] = [];
-      for (let i = 0; i < TARGET_COUNT; i++) {
-        const x = Math.random() * w;
-        const y = Math.random() * h;
-        neurons.push(buildAmbNeuron(x, y, w, h, i * 1337 + 42));
-      }
-      neuronsRef.current = neurons;
-
-      // Find close pairs for synaptic connections
-      const pairs: SynPair[] = [];
-      for (let a = 0; a < neurons.length; a++) {
-        for (let b = a + 1; b < neurons.length; b++) {
-          const na = neurons[a];
-          const nb = neurons[b];
-          if (!na || !nb) continue;
-          const dist = Math.hypot(na.x - nb.x, na.y - nb.y);
-          if (dist < CONNECTION_RANGE) {
-            pairs.push({ a, b, pulse: Math.random(), speed: 0.001 + Math.random() * 0.002 });
-          }
-        }
-      }
-      synPairsRef.current = pairs;
-    }
+    const COUNT = HERO ? 15 : 10;
 
     function resize() {
       const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
@@ -462,131 +378,89 @@ export function NeuralBackground({
       canvas.style.width = w + "px";
       canvas.style.height = h + "px";
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      rebuild(w, h);
+      // Build neurons with final size so positions are distributed across canvas
+      neuronsRef.current = Array.from({ length: COUNT }, (_, i) =>
+        buildNeuron(i * 1777 + 53, w, h)
+      );
     }
 
     let tick = 0;
+    let frame = 0;
     let visible = true;
 
     function draw() {
       const { w, h } = sizeRef.current;
       ctx.clearRect(0, 0, w, h);
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
 
       const neurons = neuronsRef.current;
 
-      // Drift neurons
-      if (!reduceMotion) {
-        for (const n of neurons) {
-          n.x += n.vx;
-          n.y += n.vy;
-          // Wrap at edges with generous margin
-          if (n.x < -250) n.x = w + 250;
-          if (n.x > w + 250) n.x = -250;
-          if (n.y < -250) n.y = h + 250;
-          if (n.y > h + 250) n.y = -250;
-        }
-
-        // Advance dendritic pulses
-        for (const n of neurons) {
-          advancePulses(n.branches);
-        }
-
-        // Advance synaptic connection pulses
-        for (const p of synPairsRef.current) {
-          p.pulse += p.speed;
-          if (p.pulse > 1) p.pulse = 0;
-        }
-      }
-
-      // Draw synaptic connections FIRST (under neurons)
       ctx.globalCompositeOperation = "lighter";
-      for (const pair of synPairsRef.current) {
-        const na = neurons[pair.a];
-        const nb = neurons[pair.b];
-        if (!na || !nb) continue;
 
-        const ax = na.axonEnd ? na.x + na.axonEnd.x : na.x;
-        const ay = na.axonEnd ? na.y + na.axonEnd.y : na.y;
-
-        // Very subtle connection line
-        const lineAlpha = Math.round(BASE_ALPHA * 18).toString(16).padStart(2, "0");
-        const grad = ctx.createLinearGradient(ax, ay, nb.x, nb.y);
-        grad.addColorStop(0, na.color + lineAlpha);
-        grad.addColorStop(1, nb.color + lineAlpha);
-        ctx.beginPath();
-        ctx.moveTo(ax, ay);
-        ctx.lineTo(nb.x, nb.y);
-        ctx.strokeStyle = grad;
-        ctx.lineWidth = 0.5;
-        ctx.stroke();
-
-        // Traveling pulse bead along connection
-        const px = ax + (nb.x - ax) * pair.pulse;
-        const py = ay + (nb.y - ay) * pair.pulse;
-        const beadCol = na.color;
-        const beadGrad = ctx.createRadialGradient(px, py, 0, px, py, 4);
-        beadGrad.addColorStop(0, beadCol + "cc");
-        beadGrad.addColorStop(1, beadCol + "00");
-        ctx.fillStyle = beadGrad;
-        ctx.beginPath();
-        ctx.arc(px, py, 4, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // Draw neurons
       for (const n of neurons) {
         ctx.save();
         ctx.translate(n.x, n.y);
 
-        // Draw dendritic branches with additive bloom
-        ctx.globalCompositeOperation = "lighter";
         for (const b of n.branches) {
-          drawBranch(b, 0, 0, tick, ctx, n.color, BASE_ALPHA);
+          drawBranch(b, 0, 0, tick, ctx, n.cr, n.cg, n.cb);
         }
 
-        // Axon
-        if (n.axonEnd) {
-          const axAngle = Math.atan2(n.axonEnd.y, n.axonEnd.x);
-          const axLen = Math.hypot(n.axonEnd.x, n.axonEnd.y);
-          // Slight sway on the axon
-          const axSway = Math.sin(tick * 0.006 + n.somaPhase * 0.7) * axLen * 0.04;
-          const nx = -Math.sin(axAngle);
-          const ny = Math.cos(axAngle);
-          const aex = n.axonEnd.x + nx * axSway;
-          const aey = n.axonEnd.y + ny * axSway;
-
+        if (n.axon) {
+          const axSway = Math.sin(tick * 0.005 + n.somaPhase) * 8;
+          const aex = n.axon.tx + n.axon.nx * axSway;
+          const aey = n.axon.ty + n.axon.ny * axSway;
+          ctx.strokeStyle = `rgba(${n.cr},${n.cg},${n.cb},0.18)`;
+          ctx.lineWidth = 0.7;
           ctx.beginPath();
           ctx.moveTo(0, 0);
           ctx.lineTo(aex, aey);
-          const axAlpha = Math.round(BASE_ALPHA * 100).toString(16).padStart(2, "0");
-          ctx.strokeStyle = n.color + axAlpha;
-          ctx.lineWidth = 0.7;
           ctx.stroke();
-
-          // Axon terminal bouton
-          const tbGrad = ctx.createRadialGradient(aex, aey, 0, aex, aey, 5);
-          tbGrad.addColorStop(0, n.color + "cc");
-          tbGrad.addColorStop(1, n.color + "00");
-          ctx.fillStyle = tbGrad;
+          ctx.fillStyle = `rgba(${n.cr},${n.cg},${n.cb},0.5)`;
           ctx.beginPath();
-          ctx.arc(aex, aey, 5, 0, Math.PI * 2);
+          ctx.arc(aex, aey, 2, 0, Math.PI * 2);
           ctx.fill();
         }
 
-        // Soma on top in source-over
-        ctx.globalCompositeOperation = "source-over";
-        drawSoma(n, tick, ctx, BASE_ALPHA);
+        ctx.restore();
+      }
 
+      ctx.globalCompositeOperation = "source-over";
+      for (const n of neurons) {
+        const breathe = 1 + 0.05 * Math.sin(tick * 0.017 + n.somaPhase);
+        const half = n.somaHalf;
+        ctx.save();
+        ctx.translate(n.x, n.y);
+        ctx.scale(breathe, breathe);
+        ctx.drawImage(n.somaCanvas, -half, -half, half * 2, half * 2);
         ctx.restore();
       }
 
       ctx.globalCompositeOperation = "source-over";
     }
 
+    function advance() {
+      const { w, h } = sizeRef.current;
+      for (const n of neuronsRef.current) {
+        n.x += n.vx;
+        n.y += n.vy;
+        if (n.x < -180) n.x = w + 180;
+        if (n.x > w + 180) n.x = -180;
+        if (n.y < -180) n.y = h + 180;
+        if (n.y > h + 180) n.y = -180;
+        tickBranches(n.branches);
+      }
+    }
+
     function loop() {
       if (!visible) return;
       tick++;
-      draw();
+      frame++;
+      // Run advance + draw every other frame (≈30fps) to keep page snappy
+      if (frame % 2 === 0) {
+        advance();
+        draw();
+      }
       rafRef.current = requestAnimationFrame(loop);
     }
 
@@ -624,25 +498,22 @@ export function NeuralBackground({
       aria-hidden
       className={`pointer-events-none fixed inset-0 -z-10 overflow-hidden ${className ?? ""}`}
     >
-      {/* Deep-space layered ambient gradients */}
       <div
         className="absolute inset-0"
         style={{
           background: [
-            "radial-gradient(ellipse 60% 40% at 15% 20%, rgba(0,229,255,0.07) 0%, transparent 60%)",
-            "radial-gradient(ellipse 55% 45% at 88% 80%, rgba(157,122,255,0.09) 0%, transparent 55%)",
-            "radial-gradient(ellipse 70% 30% at 50% 105%, rgba(0,229,160,0.04) 0%, transparent 55%)",
-            "radial-gradient(ellipse 40% 60% at 75% 15%, rgba(157,122,255,0.05) 0%, transparent 55%)",
+            "radial-gradient(ellipse 55% 40% at 15% 22%, rgba(0,229,255,0.06) 0%, transparent 60%)",
+            "radial-gradient(ellipse 50% 45% at 85% 78%, rgba(157,122,255,0.08) 0%, transparent 55%)",
+            "radial-gradient(ellipse 65% 30% at 50% 105%, rgba(0,229,160,0.04) 0%, transparent 55%)",
           ].join(", "),
         }}
       />
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
-      {/* Vignette to keep content legible */}
       <div
         className="absolute inset-0"
         style={{
           background:
-            "radial-gradient(ellipse 110% 85% at 50% 50%, transparent 35%, rgba(4,5,10,0.6) 100%)",
+            "radial-gradient(ellipse 115% 90% at 50% 50%, transparent 45%, rgba(4,5,10,0.5) 100%)",
         }}
       />
     </div>
