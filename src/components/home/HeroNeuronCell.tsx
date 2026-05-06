@@ -3,66 +3,99 @@
 import { useEffect, useRef } from "react";
 
 /**
- * HeroNeuronCell — large cinematic biological neuron.
+ * HeroNeuronCell — photorealistic biological neuron.
  *
- * Renders a single dominant neuron (soma + organic curved dendrites +
- * synaptic terminal points) with travelling action-potential pulses.
- * Designed to fill the left or background area of the homepage hero,
- * matching the look of a real-neuron photograph but rendered live.
+ * Renders a single pyramidal-style neuron using:
+ *   • Organic perturbed soma (irregular cell body, not a circle)
+ *     with internal nucleus + nucleolus + cytoplasmic granularity
+ *   • Recursive L-system dendritic arbor with cubic width tapering,
+ *     per-segment angle jitter, and ~5 levels of branching
+ *   • A long thin axon with a myelinated look + axon hillock
+ *   • Fine synaptic boutons (terminal blebs) at every twig tip
+ *   • Membrane halo + fluorescence-microscopy bloom
+ *   • Slow-travelling action-potential pulses along random dendrites
  *
- * Single canvas, single rAF loop, DPR-aware, ResizeObserver-driven.
+ * All on a single 2D canvas, DPR-aware, ResizeObserver-driven,
+ * pauses on tab hide and on prefers-reduced-motion.
  */
 
-interface Branch {
-  /** end-point relative to parent end */
-  ax: number;
-  ay: number;
-  /** control point relative to parent end */
+// ─── Geometry types ────────────────────────────────────────────────
+interface Segment {
+  /** start point in world coords (relative to soma centre) */
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  /** quadratic control */
   cx: number;
   cy: number;
-  /** sub-branches (recursive but capped at depth 2) */
-  subs: SubBranch[];
-  /** pulse 0..1 along this branch */
-  pulse: number;
-  pulseSpeed: number;
-  /** offset so pulses don't all start at 0 */
-  pulseOffset: number;
+  /** radius at start and end (for tapered stroking via gradient stamp) */
+  r0: number;
+  r1: number;
+  /** depth in the tree (0 = first order) */
+  depth: number;
+  /** length cached for pulse animation */
+  length: number;
+  /** colour mix 0..1 → soma side (violet) to tip side (cyan) */
+  tipness: number;
 }
 
-interface SubBranch {
-  ax: number;
-  ay: number;
-  cx: number;
-  cy: number;
-  /** terminal node radius */
-  tipR: number;
-  /** terminal glow brightness */
-  tipBrightness: number;
+interface Bouton {
+  x: number;
+  y: number;
+  r: number;
+  brightness: number;
 }
 
-const COLOR_CYAN = "#00e5ff";
-const COLOR_VIOLET = "#9d7aff";
+interface Pulse {
+  /** index into segments[] of the path it follows */
+  pathIdx: number;
+  /** 0..1 along the polyline */
+  t: number;
+  speed: number;
+  intensity: number;
+}
 
+// Path = ordered list of segment indices from soma → terminal tip
+type Path = number[];
+
+interface SomaPoint {
+  x: number;
+  y: number;
+}
+
+interface BuiltState {
+  segments: Segment[];
+  boutons: Bouton[];
+  paths: Path[];
+  pulses: Pulse[];
+  soma: SomaPoint[];
+  somaCx: number;
+  somaCy: number;
+  somaR: number;
+  axonPath: Path;
+  w: number;
+  h: number;
+}
+
+// Deterministic PRNG so the cell looks the same across reloads on a given size
 function rng(seed: number) {
-  let s = seed;
+  let s = seed >>> 0;
   return () => {
-    s = (s * 9301 + 49297) % 233280;
-    return s / 233280;
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 0xffffffff;
   };
 }
 
-export function HeroNeuronCell() {
+interface Props {
+  className?: string;
+}
+
+export function HeroNeuronCell({ className }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const stateRef = useRef<BuiltState | null>(null);
   const rafRef = useRef(0);
-  const stateRef = useRef<{
-    branches: Branch[];
-    cx: number;
-    cy: number;
-    somaR: number;
-    w: number;
-    h: number;
-  }>({ branches: [], cx: 0, cy: 0, somaR: 0, w: 0, h: 0 });
 
   useEffect(() => {
     const wrapEl = wrapRef.current;
@@ -78,62 +111,273 @@ export function HeroNeuronCell() {
       typeof window !== "undefined" &&
       window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
+    // ─── Build neuron geometry ───────────────────────────────────
     function build(w: number, h: number) {
       const cx = w * 0.5;
       const cy = h * 0.55;
-      const scale = Math.min(w, h) / 600;
-      const somaR = Math.max(28, 46 * scale);
-      const rand = rng(42);
+      const scale = Math.min(w, h) / 620;
+      const somaR = Math.max(30, 52 * scale);
+      const rand = rng(1337);
 
-      const BRANCH_COUNT = 7;
-      const branches: Branch[] = [];
-      for (let i = 0; i < BRANCH_COUNT; i++) {
-        const angle = (i / BRANCH_COUNT) * Math.PI * 2 + rand() * 0.4;
-        const length = (180 + rand() * 160) * scale;
-        const ax = Math.cos(angle) * length;
-        const ay = Math.sin(angle) * length;
+      // Irregular soma outline — perturbed polygon with smoothing
+      const SOMA_POINTS = 36;
+      const soma: SomaPoint[] = [];
+      for (let i = 0; i < SOMA_POINTS; i++) {
+        const a = (i / SOMA_POINTS) * Math.PI * 2;
+        // multi-octave noise for organic bumpiness
+        const n =
+          Math.sin(a * 3 + 0.7) * 0.06 +
+          Math.sin(a * 5 + 1.4) * 0.04 +
+          Math.sin(a * 11 + 2.3) * 0.025 +
+          (rand() - 0.5) * 0.02;
+        // slight elongation to look pyramidal (more vertical)
+        const elong = 1 + Math.cos(a) * 0.06 + Math.sin(a) * -0.05;
+        const r = somaR * (1 + n) * elong;
+        soma.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r });
+      }
 
-        // Curve normal
+      const segments: Segment[] = [];
+      const boutons: Bouton[] = [];
+      const paths: Path[] = [];
+
+      /**
+       * Recursive L-system branching.
+       * Returns the index of the last segment created (terminal tip).
+       */
+      function grow(
+        startX: number,
+        startY: number,
+        angle: number,
+        length: number,
+        thickness: number,
+        depth: number,
+        maxDepth: number,
+        path: Path,
+        rnd: () => number
+      ): void {
+        // Build a slightly curved segment with quadratic control
+        const curveSign = rnd() > 0.5 ? 1 : -1;
+        const curveAmt = (0.15 + rnd() * 0.25) * curveSign;
+        const ex = startX + Math.cos(angle) * length;
+        const ey = startY + Math.sin(angle) * length;
+        // perpendicular control offset
         const nx = -Math.sin(angle);
         const ny = Math.cos(angle);
-        const curveAmount = (rand() - 0.5) * length * 0.6;
-        const halfX = ax * 0.5 + nx * curveAmount;
-        const halfY = ay * 0.5 + ny * curveAmount;
+        const ctrlX = startX + Math.cos(angle) * length * 0.5 + nx * length * curveAmt;
+        const ctrlY = startY + Math.sin(angle) * length * 0.5 + ny * length * curveAmt;
 
-        const subCount = 2 + Math.floor(rand() * 3);
-        const subs: SubBranch[] = [];
-        for (let k = 0; k < subCount; k++) {
-          const sa = angle + (rand() - 0.5) * 1.4;
-          const sl = length * (0.35 + rand() * 0.55);
-          const sax = ax + Math.cos(sa) * sl;
-          const say = ay + Math.sin(sa) * sl;
-          const snx = -Math.sin(sa);
-          const sny = Math.cos(sa);
-          const sCurve = (rand() - 0.5) * sl * 0.45;
-          subs.push({
-            ax: sax,
-            ay: say,
-            cx: ax + Math.cos(sa) * sl * 0.5 + snx * sCurve,
-            cy: ay + Math.sin(sa) * sl * 0.5 + sny * sCurve,
-            tipR: 2.5 + rand() * 3 * scale,
-            tipBrightness: 0.7 + rand() * 0.3,
+        const r0 = thickness;
+        const r1 = Math.max(0.35, thickness * 0.62);
+        const tipness = depth / maxDepth;
+
+        const segIdx = segments.length;
+        segments.push({
+          x0: startX,
+          y0: startY,
+          x1: ex,
+          y1: ey,
+          cx: ctrlX,
+          cy: ctrlY,
+          r0,
+          r1,
+          depth,
+          length,
+          tipness,
+        });
+        path.push(segIdx);
+
+        // Terminal? add bouton + close out path
+        if (depth >= maxDepth || length < 6) {
+          boutons.push({
+            x: ex,
+            y: ey,
+            r: Math.max(1.6, r1 * 1.4 + rnd() * 1.6),
+            brightness: 0.65 + rnd() * 0.35,
           });
+          paths.push([...path]);
+          path.pop();
+          return;
         }
 
-        branches.push({
-          ax,
-          ay,
-          cx: halfX,
-          cy: halfY,
-          subs,
-          pulse: rand(),
-          pulseSpeed: 0.0028 + rand() * 0.0035,
-          pulseOffset: rand(),
+        // Branch — usually 2 children, sometimes 3 (early), sometimes 1 (late)
+        const branchRoll = rnd();
+        const childCount =
+          depth < 2 ? (branchRoll < 0.35 ? 3 : 2) : branchRoll < 0.18 ? 1 : 2;
+
+        const baseSpread = 0.55 + rnd() * 0.35; // total angle spread between children
+        const lengthFactor = 0.55 + rnd() * 0.18;
+
+        for (let i = 0; i < childCount; i++) {
+          // distribute around continuation angle
+          const t =
+            childCount === 1 ? 0 : (i / (childCount - 1)) * 2 - 1; // -1..1
+          const childAngle =
+            angle +
+            t * baseSpread +
+            (rnd() - 0.5) * 0.25; // jitter
+          const childLength =
+            length * lengthFactor * (0.85 + rnd() * 0.3);
+          const childThickness = r1 * (0.75 + rnd() * 0.18);
+
+          // Inject a tiny mid-bouton (varicosity) every now and then
+          if (rnd() < 0.25 && depth >= 2) {
+            const midT = 0.55 + rnd() * 0.35;
+            const u = 1 - midT;
+            const bx =
+              u * u * startX +
+              2 * u * midT * ctrlX +
+              midT * midT * ex;
+            const by =
+              u * u * startY +
+              2 * u * midT * ctrlY +
+              midT * midT * ey;
+            boutons.push({
+              x: bx,
+              y: by,
+              r: 0.9 + rnd() * 1.2,
+              brightness: 0.4 + rnd() * 0.4,
+            });
+          }
+
+          grow(ex, ey, childAngle, childLength, childThickness, depth + 1, maxDepth, path, rnd);
+        }
+
+        path.pop();
+      }
+
+      // ─── Pyramidal-style trunk dendrites ──────────────────────
+      // Apical dendrite (large, points up)
+      const apicalRand = rng(2025);
+      grow(
+        cx,
+        cy - somaR * 0.85,
+        -Math.PI / 2 + (apicalRand() - 0.5) * 0.15,
+        130 * scale,
+        Math.max(2.4, 4.2 * scale),
+        0,
+        5,
+        [],
+        apicalRand
+      );
+
+      // Basal & lateral dendrites — radiate around the soma
+      const BASAL_COUNT = 6;
+      for (let i = 0; i < BASAL_COUNT; i++) {
+        const baseAngle =
+          Math.PI * 0.25 +
+          (i / BASAL_COUNT) * Math.PI * 1.5 +
+          (rand() - 0.5) * 0.2;
+        const startX = cx + Math.cos(baseAngle) * somaR * 0.85;
+        const startY = cy + Math.sin(baseAngle) * somaR * 0.85;
+        const len = (75 + rand() * 55) * scale;
+        const thick = Math.max(1.8, (3.0 + rand() * 0.6) * scale);
+        const seedRand = rng(7777 + i * 31);
+        grow(startX, startY, baseAngle, len, thick, 0, 4 + (i % 2), [], seedRand);
+      }
+
+      // ─── Axon — single long thin process going down-left ──────
+      const axonPath: Path = [];
+      const axonAngle = Math.PI * 0.62 + (rand() - 0.5) * 0.1; // slightly left of straight down
+      const axonRand = rng(99);
+      // axon hillock — short stubby start
+      let ax = cx + Math.cos(axonAngle) * somaR * 0.95;
+      let ay = cy + Math.sin(axonAngle) * somaR * 0.95;
+      let aAngle = axonAngle;
+      let aThick = Math.max(1.6, 2.4 * scale);
+      const AXON_SEGS = 9;
+      for (let i = 0; i < AXON_SEGS; i++) {
+        const len = (45 + axonRand() * 30) * scale;
+        const curveSign = axonRand() > 0.5 ? 1 : -1;
+        const curveAmt = (0.08 + axonRand() * 0.12) * curveSign;
+        const ex = ax + Math.cos(aAngle) * len;
+        const ey = ay + Math.sin(aAngle) * len;
+        const nx = -Math.sin(aAngle);
+        const ny = Math.cos(aAngle);
+        const ctrlX = ax + Math.cos(aAngle) * len * 0.5 + nx * len * curveAmt;
+        const ctrlY = ay + Math.sin(aAngle) * len * 0.5 + ny * len * curveAmt;
+        const r0 = aThick;
+        const r1 = Math.max(0.6, aThick * 0.94);
+        const idx = segments.length;
+        segments.push({
+          x0: ax,
+          y0: ay,
+          x1: ex,
+          y1: ey,
+          cx: ctrlX,
+          cy: ctrlY,
+          r0,
+          r1,
+          depth: 0,
+          length: len,
+          tipness: 0.85,
+        });
+        axonPath.push(idx);
+        ax = ex;
+        ay = ey;
+        aAngle += (axonRand() - 0.5) * 0.35;
+        aThick = r1;
+      }
+      // Axon terminals — small spray
+      const TERMINALS = 5;
+      for (let i = 0; i < TERMINALS; i++) {
+        const tAngle = aAngle + (i / (TERMINALS - 1) - 0.5) * 0.9;
+        const tLen = (30 + axonRand() * 25) * scale;
+        const ex = ax + Math.cos(tAngle) * tLen;
+        const ey = ay + Math.sin(tAngle) * tLen;
+        const nx = -Math.sin(tAngle);
+        const ny = Math.cos(tAngle);
+        const ctrlX = ax + Math.cos(tAngle) * tLen * 0.5 + nx * tLen * 0.15;
+        const ctrlY = ay + Math.sin(tAngle) * tLen * 0.5 + ny * tLen * 0.15;
+        segments.push({
+          x0: ax,
+          y0: ay,
+          x1: ex,
+          y1: ey,
+          cx: ctrlX,
+          cy: ctrlY,
+          r0: aThick,
+          r1: Math.max(0.5, aThick * 0.7),
+          depth: 0,
+          length: tLen,
+          tipness: 0.9,
+        });
+        boutons.push({
+          x: ex,
+          y: ey,
+          r: 1.6 + axonRand() * 1.2,
+          brightness: 0.85,
         });
       }
-      stateRef.current = { branches, cx, cy, somaR, w, h };
+
+      // ─── Pulses — pick a few paths to send action potentials down ─
+      const pulses: Pulse[] = [];
+      const PULSE_COUNT = Math.min(6, paths.length);
+      const pulseRand = rng(555);
+      for (let i = 0; i < PULSE_COUNT; i++) {
+        pulses.push({
+          pathIdx: Math.floor(pulseRand() * paths.length),
+          t: pulseRand(),
+          speed: 0.0015 + pulseRand() * 0.0025,
+          intensity: 0.6 + pulseRand() * 0.4,
+        });
+      }
+
+      stateRef.current = {
+        segments,
+        boutons,
+        paths,
+        pulses,
+        soma,
+        somaCx: cx,
+        somaCy: cy,
+        somaR,
+        axonPath,
+        w,
+        h,
+      };
     }
 
+    // ─── Resize ──────────────────────────────────────────────────
     function resize() {
       const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
       const rect = wrap.getBoundingClientRect();
@@ -147,186 +391,359 @@ export function HeroNeuronCell() {
       build(w, h);
     }
 
-    let tick = 0;
-
-    function quad(t: number, p0: number, p1: number, p2: number) {
+    // ─── Quadratic bezier sampler ────────────────────────────────
+    function quadPoint(t: number, p0: number, p1: number, p2: number) {
       const u = 1 - t;
       return u * u * p0 + 2 * u * t * p1 + t * t * p2;
     }
 
-    function drawBranch(b: Branch, originX: number, originY: number) {
-      const ex = originX + b.ax;
-      const ey = originY + b.ay;
-      const cx = originX + b.cx;
-      const cy = originY + b.cy;
+    // ─── Sample point + tangent direction along a multi-segment path
+    function samplePath(path: Path, t: number, segs: Segment[]) {
+      // approximate by uniform t across segment count
+      const total = path.length;
+      const f = t * total;
+      const i = Math.min(total - 1, Math.floor(f));
+      const localT = f - i;
+      const idx = path[i];
+      if (idx === undefined) return null;
+      const s = segs[idx];
+      if (!s) return null;
+      const x = quadPoint(localT, s.x0, s.cx, s.x1);
+      const y = quadPoint(localT, s.y0, s.cy, s.y1);
+      return { x, y };
+    }
 
-      // Main dendrite — cyan-violet gradient stroke
-      const grad = ctx.createLinearGradient(originX, originY, ex, ey);
-      grad.addColorStop(0, COLOR_CYAN + "55");
-      grad.addColorStop(0.6, COLOR_VIOLET + "40");
-      grad.addColorStop(1, COLOR_VIOLET + "18");
+    // ─── Draw a single tapered curved segment ────────────────────
+    function drawSegment(s: Segment, alphaMul: number) {
+      // Fluorescence-microscopy palette: deeper violet near soma → bright cyan-magenta at tips
+      const startCol = `rgba(190, 130, 255, ${0.85 * alphaMul})`;
+      const endCol = `rgba(${Math.round(120 + s.tipness * 80)}, ${Math.round(
+        200 + s.tipness * 55
+      )}, 255, ${(0.7 + s.tipness * 0.25) * alphaMul})`;
+
+      // Outer glow stroke (wider, very transparent)
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = `rgba(157, 122, 255, ${0.18 * alphaMul})`;
+      ctx.lineWidth = (s.r0 + s.r1) * 1.6 + 2;
       ctx.beginPath();
-      ctx.moveTo(originX, originY);
-      ctx.quadraticCurveTo(cx, cy, ex, ey);
+      ctx.moveTo(s.x0, s.y0);
+      ctx.quadraticCurveTo(s.cx, s.cy, s.x1, s.y1);
+      ctx.stroke();
+
+      // Main tapered stroke — emulate taper by drawing 2 strokes:
+      // 1) wider gradient body, 2) thinner bright core
+      const grad = ctx.createLinearGradient(s.x0, s.y0, s.x1, s.y1);
+      grad.addColorStop(0, startCol);
+      grad.addColorStop(1, endCol);
       ctx.strokeStyle = grad;
-      ctx.lineWidth = 1.6;
-      ctx.stroke();
-
-      // Soft outer glow on dendrite
+      ctx.lineWidth = (s.r0 + s.r1) * 0.5 + 0.4;
       ctx.beginPath();
-      ctx.moveTo(originX, originY);
-      ctx.quadraticCurveTo(cx, cy, ex, ey);
-      ctx.strokeStyle = COLOR_VIOLET + "0c";
-      ctx.lineWidth = 5;
+      ctx.moveTo(s.x0, s.y0);
+      ctx.quadraticCurveTo(s.cx, s.cy, s.x1, s.y1);
       ctx.stroke();
 
-      // Sub-branches
-      for (const s of b.subs) {
-        const sex = originX + s.ax;
-        const sey = originY + s.ay;
-        const scx = originX + s.cx;
-        const scy = originY + s.cy;
-        ctx.beginPath();
-        ctx.moveTo(ex, ey);
-        ctx.quadraticCurveTo(scx, scy, sex, sey);
-        ctx.strokeStyle = COLOR_CYAN + "30";
-        ctx.lineWidth = 0.9;
-        ctx.stroke();
+      // Bright core highlight
+      ctx.strokeStyle = `rgba(235, 220, 255, ${0.45 * alphaMul})`;
+      ctx.lineWidth = Math.max(0.3, (s.r0 + s.r1) * 0.18);
+      ctx.beginPath();
+      ctx.moveTo(s.x0, s.y0);
+      ctx.quadraticCurveTo(s.cx, s.cy, s.x1, s.y1);
+      ctx.stroke();
+    }
 
-        // Synaptic terminal — bright glowing dot
-        const tipPulse =
-          0.85 + 0.15 * Math.sin(tick * 0.04 + s.tipR * 1.7);
-        const tipR = s.tipR * tipPulse;
-        const tipGrd = ctx.createRadialGradient(
-          sex,
-          sey,
-          0,
-          sex,
-          sey,
-          tipR * 4
-        );
-        tipGrd.addColorStop(0, COLOR_CYAN + "ff");
-        tipGrd.addColorStop(0.3, COLOR_CYAN + "70");
-        tipGrd.addColorStop(1, "rgba(0,229,255,0)");
-        ctx.beginPath();
-        ctx.arc(sex, sey, tipR * 4, 0, Math.PI * 2);
-        ctx.fillStyle = tipGrd;
-        ctx.fill();
+    // ─── Draw soma (organic blob with internal structures) ───────
+    function drawSoma(state: BuiltState) {
+      const { soma, somaCx, somaCy, somaR } = state;
 
+      // Outer bloom halo
+      const haloGrad = ctx.createRadialGradient(
+        somaCx,
+        somaCy,
+        somaR * 0.5,
+        somaCx,
+        somaCy,
+        somaR * 3.6
+      );
+      haloGrad.addColorStop(0, "rgba(157, 122, 255, 0.28)");
+      haloGrad.addColorStop(0.4, "rgba(125, 95, 220, 0.10)");
+      haloGrad.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = haloGrad;
+      ctx.beginPath();
+      ctx.arc(somaCx, somaCy, somaR * 3.6, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Membrane fill — radial gradient violet → deep navy
+      const membraneGrad = ctx.createRadialGradient(
+        somaCx - somaR * 0.25,
+        somaCy - somaR * 0.3,
+        somaR * 0.1,
+        somaCx,
+        somaCy,
+        somaR * 1.15
+      );
+      membraneGrad.addColorStop(0, "#e8d4ff");
+      membraneGrad.addColorStop(0.18, "#b794ff");
+      membraneGrad.addColorStop(0.45, "#7c5ccc");
+      membraneGrad.addColorStop(0.75, "#3a2570");
+      membraneGrad.addColorStop(1, "#0d0820");
+
+      ctx.beginPath();
+      // Smooth catmull-rom-ish path through soma points
+      const n = soma.length;
+      const first = soma[0];
+      if (!first) return;
+      ctx.moveTo(
+        (first.x + (soma[n - 1]?.x ?? first.x)) / 2,
+        (first.y + (soma[n - 1]?.y ?? first.y)) / 2
+      );
+      for (let i = 0; i < n; i++) {
+        const p = soma[i];
+        const next = soma[(i + 1) % n];
+        if (!p || !next) continue;
+        const mx = (p.x + next.x) / 2;
+        const my = (p.y + next.y) / 2;
+        ctx.quadraticCurveTo(p.x, p.y, mx, my);
+      }
+      ctx.closePath();
+      ctx.fillStyle = membraneGrad;
+      ctx.fill();
+
+      // Membrane rim — subtle bright outline
+      ctx.strokeStyle = "rgba(220, 195, 255, 0.35)";
+      ctx.lineWidth = 0.6;
+      ctx.stroke();
+
+      // Cytoplasmic granules — scattered semi-transparent dots inside soma
+      const granRand = rng(31337);
+      const GRANS = 38;
+      for (let i = 0; i < GRANS; i++) {
+        const a = granRand() * Math.PI * 2;
+        const r = granRand() * somaR * 0.78;
+        const gx = somaCx + Math.cos(a) * r;
+        const gy = somaCy + Math.sin(a) * r;
+        const gr = 0.6 + granRand() * 1.4;
+        ctx.fillStyle = `rgba(${200 + Math.floor(granRand() * 55)}, ${
+          170 + Math.floor(granRand() * 55)
+        }, 255, ${0.18 + granRand() * 0.25})`;
         ctx.beginPath();
-        ctx.arc(sex, sey, tipR, 0, Math.PI * 2);
-        ctx.fillStyle = "#dffaff";
+        ctx.arc(gx, gy, gr, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      // Travelling action-potential pulse along main dendrite
-      const t = (b.pulse + b.pulseOffset) % 1;
-      const px = quad(t, originX, cx, ex);
-      const py = quad(t, originY, cy, ey);
-      const pulseR = 3.5;
-      const pulseGrd = ctx.createRadialGradient(px, py, 0, px, py, pulseR * 4);
-      pulseGrd.addColorStop(0, "#ffffffee");
-      pulseGrd.addColorStop(0.3, COLOR_CYAN + "cc");
-      pulseGrd.addColorStop(1, "rgba(0,229,255,0)");
-      ctx.beginPath();
-      ctx.arc(px, py, pulseR * 4, 0, Math.PI * 2);
-      ctx.fillStyle = pulseGrd;
-      ctx.fill();
-    }
-
-    function drawSoma(x: number, y: number, r: number) {
-      // Outer atmospheric glow
-      const outer = ctx.createRadialGradient(x, y, 0, x, y, r * 5);
-      outer.addColorStop(0, "rgba(157,122,255,0.45)");
-      outer.addColorStop(0.4, "rgba(0,229,255,0.18)");
-      outer.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.beginPath();
-      ctx.arc(x, y, r * 5, 0, Math.PI * 2);
-      ctx.fillStyle = outer;
-      ctx.fill();
-
-      // Cell body — purple core to dark edge
-      const body = ctx.createRadialGradient(
-        x - r * 0.25,
-        y - r * 0.25,
-        0,
-        x,
-        y,
-        r
+      // Nucleus — slightly off-centre dark blob with bright nucleolus
+      const nx = somaCx + somaR * 0.05;
+      const ny = somaCy + somaR * 0.08;
+      const nr = somaR * 0.45;
+      const nucGrad = ctx.createRadialGradient(
+        nx - nr * 0.3,
+        ny - nr * 0.3,
+        nr * 0.15,
+        nx,
+        ny,
+        nr
       );
-      body.addColorStop(0, "#cdb4ff");
-      body.addColorStop(0.4, "#7c5ccc");
-      body.addColorStop(0.85, "#3a2570");
-      body.addColorStop(1, "#0a0716");
+      nucGrad.addColorStop(0, "rgba(60, 30, 120, 0.85)");
+      nucGrad.addColorStop(0.7, "rgba(25, 12, 55, 0.95)");
+      nucGrad.addColorStop(1, "rgba(8, 4, 22, 1)");
       ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fillStyle = body;
+      ctx.arc(nx, ny, nr, 0, Math.PI * 2);
+      ctx.fillStyle = nucGrad;
       ctx.fill();
 
-      // Core highlight (nucleus-like)
+      // Nucleolus — tiny bright dot
+      const nlx = nx - nr * 0.18;
+      const nly = ny - nr * 0.1;
+      const nlGrad = ctx.createRadialGradient(nlx, nly, 0, nlx, nly, nr * 0.18);
+      nlGrad.addColorStop(0, "rgba(255, 220, 255, 0.95)");
+      nlGrad.addColorStop(1, "rgba(180, 140, 255, 0)");
       ctx.beginPath();
-      ctx.arc(x - r * 0.2, y - r * 0.25, r * 0.35, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(255,255,255,0.18)";
+      ctx.arc(nlx, nly, nr * 0.18, 0, Math.PI * 2);
+      ctx.fillStyle = nlGrad;
       ctx.fill();
 
-      // Edge ring
+      // Surface highlight — top-left specular
+      const hlGrad = ctx.createRadialGradient(
+        somaCx - somaR * 0.4,
+        somaCy - somaR * 0.45,
+        0,
+        somaCx - somaR * 0.4,
+        somaCy - somaR * 0.45,
+        somaR * 0.55
+      );
+      hlGrad.addColorStop(0, "rgba(255, 255, 255, 0.45)");
+      hlGrad.addColorStop(1, "rgba(255, 255, 255, 0)");
+      ctx.fillStyle = hlGrad;
       ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(157,122,255,0.7)";
-      ctx.lineWidth = 1.1;
-      ctx.stroke();
+      ctx.arc(somaCx - somaR * 0.4, somaCy - somaR * 0.45, somaR * 0.55, 0, Math.PI * 2);
+      ctx.fill();
     }
+
+    // ─── Draw a bouton (synaptic terminal) ───────────────────────
+    function drawBouton(b: Bouton, glow: number) {
+      // outer halo
+      const grad = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r * 4.5);
+      grad.addColorStop(0, `rgba(180, 230, 255, ${0.7 * b.brightness * glow})`);
+      grad.addColorStop(0.4, `rgba(120, 180, 255, ${0.25 * b.brightness * glow})`);
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r * 4.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      // bright core
+      ctx.fillStyle = `rgba(240, 250, 255, ${0.9 * b.brightness})`;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // ─── Frame loop ──────────────────────────────────────────────
+    let tick = 0;
 
     function draw() {
-      const { branches, cx, cy, somaR, w, h } = stateRef.current;
+      const state = stateRef.current;
+      if (!state) return;
+      const { w, h, segments, boutons, pulses, paths } = state;
+
+      // Clear
       ctx.clearRect(0, 0, w, h);
 
-      // Atmospheric background blur (subtle)
-      const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(w, h));
-      bg.addColorStop(0, "rgba(157,122,255,0.06)");
-      bg.addColorStop(0.5, "rgba(0,229,255,0.02)");
-      bg.addColorStop(1, "rgba(0,0,0,0)");
+      // Background ambient — very soft purple wash so it sits in deep space
+      const bg = ctx.createRadialGradient(w * 0.5, h * 0.5, 0, w * 0.5, h * 0.5, Math.max(w, h) * 0.7);
+      bg.addColorStop(0, "rgba(20, 10, 45, 0.35)");
+      bg.addColorStop(1, "rgba(0, 0, 0, 0)");
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, w, h);
 
-      // Draw all branches under the soma so the cell sits on top
-      for (const b of branches) {
-        b.pulse += b.pulseSpeed;
-        if (b.pulse > 1) b.pulse = 0;
-        drawBranch(b, cx, cy);
+      // Use additive blending for that fluorescence-microscopy bloom
+      ctx.globalCompositeOperation = "lighter";
+
+      // 1) Far halo around all dendrites — draw two passes for depth
+      for (const s of segments) {
+        drawSegment(s, 1);
       }
 
-      drawSoma(cx, cy, somaR);
-    }
+      // 2) Boutons (synaptic terminals) with subtle pulsing brightness
+      const flicker = 0.85 + Math.sin(tick * 0.04) * 0.15;
+      for (const b of boutons) {
+        // independent flicker per bouton based on position
+        const f =
+          flicker *
+          (0.85 + Math.sin(tick * 0.05 + b.x * 0.02 + b.y * 0.013) * 0.15);
+        drawBouton(b, f);
+      }
 
-    function loop() {
+      // 3) Action potential pulses — bright bead travelling along path
+      for (const p of pulses) {
+        const path = paths[p.pathIdx];
+        if (!path) continue;
+        const pos = samplePath(path, p.t, segments);
+        if (pos) {
+          const pulseR = 4 + Math.sin(tick * 0.1 + p.pathIdx) * 1.5;
+          const grad = ctx.createRadialGradient(
+            pos.x,
+            pos.y,
+            0,
+            pos.x,
+            pos.y,
+            pulseR * 6
+          );
+          grad.addColorStop(0, `rgba(255, 255, 255, ${0.95 * p.intensity})`);
+          grad.addColorStop(0.25, `rgba(180, 230, 255, ${0.6 * p.intensity})`);
+          grad.addColorStop(0.55, `rgba(100, 170, 255, ${0.25 * p.intensity})`);
+          grad.addColorStop(1, "rgba(0,0,0,0)");
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(pos.x, pos.y, pulseR * 6, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        if (!reduceMotion) {
+          p.t += p.speed;
+          if (p.t > 1) {
+            p.t = 0;
+            // re-pick a path so the activity feels random
+            p.pathIdx = Math.floor((Math.random() * paths.length) | 0);
+            p.speed = 0.0015 + Math.random() * 0.0025;
+          }
+        }
+      }
+
+      // Restore normal blending for the soma so it can have dark internals
+      ctx.globalCompositeOperation = "source-over";
+
+      // 4) Soma — drawn last so it sits on top of dendrite bases
+      drawSoma(state);
+
+      // 5) Axon hillock highlight — subtle bright rim where axon leaves soma
+      if (state.axonPath.length > 0) {
+        const firstAxIdx = state.axonPath[0];
+        if (firstAxIdx !== undefined) {
+          const firstAx = segments[firstAxIdx];
+          if (firstAx) {
+            const grad = ctx.createRadialGradient(
+              firstAx.x0,
+              firstAx.y0,
+              0,
+              firstAx.x0,
+              firstAx.y0,
+              18
+            );
+            grad.addColorStop(0, "rgba(220, 200, 255, 0.6)");
+            grad.addColorStop(1, "rgba(0,0,0,0)");
+            ctx.globalCompositeOperation = "lighter";
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(firstAx.x0, firstAx.y0, 18, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalCompositeOperation = "source-over";
+          }
+        }
+      }
+
       tick++;
-      draw();
-      rafRef.current = requestAnimationFrame(loop);
+      if (!reduceMotion) {
+        rafRef.current = requestAnimationFrame(draw);
+      }
     }
 
-    const ro = new ResizeObserver(resize);
-    ro.observe(wrap);
+    // ─── Wire up ────────────────────────────────────────────────
     resize();
-
     if (reduceMotion) {
-      draw();
+      draw(); // single static frame
     } else {
-      rafRef.current = requestAnimationFrame(loop);
+      rafRef.current = requestAnimationFrame(draw);
     }
+
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(rafRef.current);
+      resize();
+      if (reduceMotion) {
+        draw();
+      } else {
+        rafRef.current = requestAnimationFrame(draw);
+      }
+    });
+    ro.observe(wrap);
+
+    const onVis = () => {
+      if (document.hidden) {
+        cancelAnimationFrame(rafRef.current);
+      } else if (!reduceMotion) {
+        rafRef.current = requestAnimationFrame(draw);
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
 
     return () => {
       cancelAnimationFrame(rafRef.current);
       ro.disconnect();
+      document.removeEventListener("visibilitychange", onVis);
     };
   }, []);
 
   return (
-    <div
-      ref={wrapRef}
-      aria-hidden
-      className="absolute inset-0 pointer-events-none overflow-hidden"
-    >
+    <div ref={wrapRef} className={`relative w-full h-full ${className ?? ""}`}>
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
     </div>
   );
